@@ -267,8 +267,8 @@ library StormLib {
         return balances;
     }
 
-    function doATest(SwapStruct storage swappy) external {
-        swappy.hashlock = 3;
+    function doATest(SwapStruct storage swappy) external view {
+        swappy.hashlock == 3;
     }
     
 
