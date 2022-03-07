@@ -160,7 +160,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 library StormLib {
     enum MsgType{ INITIAL, UNCONDITIONAL, SHARDED, SETTLE, SETTLESUBSET, UNCONDITIONALSUBSET, ADDFUNDSTOCHANNEL, SINGLECHAIN, MULTICHAIN }
 
-    struct swapStruct {
+    struct SwapStruct {
         uint hashlock;
         uint timeout;
     }
@@ -265,6 +265,10 @@ library StormLib {
             assembly{ mstore(add(add(balances, 32), mul(i, 32)), val) }
         }
         return balances;
+    }
+
+    function doATest(SwapStruct storage swappy) public {
+        swappy.hashlock = 3;
     }
     
 
