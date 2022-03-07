@@ -242,14 +242,14 @@ library StormLib {
     
    
     //MAGIC NUMBERS
-    uint8 NUM_TOKEN = 49;
-    uint8 START_ADDRS = 50;
-    uint8 SHARD_LEN = 33;
-    uint8 TOKEN_PLUS_BALS_UNIT = 84;
+    uint8 constant NUM_TOKEN = 49;
+    uint8 constant START_ADDRS = 50;
+    uint8 constant SHARD_LEN = 33;
+    uint8 constant TOKEN_PLUS_BALS_UNIT = 84;
     
 
     //****************************** Debugging Methods *****************************/
-    function getBalancesTotals(Channel memory channel) external view returns (uint[] memory, uint32 nonce, bool exists, bool settlementInProgress) { 
+    function getBalancesTotals(Channel storage channel) external view returns (uint[] memory, uint32 nonce, bool exists, bool settlementInProgress) { 
         uint[] memory _balances = new uint[](channel.numTokens);
         for (uint8 i = 0; i < channel.numTokens; i++) {
             _balances[i] = channel.balances[i];
@@ -257,7 +257,7 @@ library StormLib {
         return (_balances, channel.nonce, channel.exists, channel.settlementInProgress);
     }
 
-    function getContractBalances(address[] calldata tokens, uint[] memory tokenAmounts) external view returns (bytes memory) {
+    function getContractBalances(address[] calldata tokens,  mapping(address => uint) storage tokenAmounts) external view returns (bytes memory) {
         bytes memory balances = new bytes(tokens.length * 32);
         for (uint i = 0; i < tokens.length; i++) {
             address addr = tokens[i];
@@ -272,12 +272,12 @@ library StormLib {
 
 
     //function that will revert if not eligble for withdraw. Called by both clients to know if able to withdraw, and internally by the withdraw function. 
-    function eligibleForWithdraw(Channel memory channel) public view {
-        require(channels[channelID].exists && channels[channelID].settlementInProgress, "b");
-        require(channels[channelID].disputeBlockTimeout < block.number, "c");
+    function eligibleForWithdraw(Channel storage channel) public view {
+        require(channel.exists && channel.settlementInProgress, "b");
+        require(channel.disputeBlockTimeout < block.number, "c");
         //checks that all of the timeouts have occurred. TO DO: make all of this more gas efficient by avoided repeated SLOAD calls
-        for (uint8 shardNo = 0; shardNo < channels[channelID].numShards; shardNo++) {
-            require(channels[channelID].shards[shardNo].shardBlockTimeout < block.number, "d");
+        for (uint8 shardNo = 0; shardNo < channel.numShards; shardNo++) {
+            require(channel.shards[shardNo].shardBlockTimeout < block.number, "d");
             //TO DO: could allow for faster settle if a claim here that this timeout can be skipped if channels.shards[shardNo].pushedForward == true for nonTuringIncomplete, or channel.shards[shardNo].pushedForward == 3 for TuringIncomplete.
         }
     }
@@ -967,7 +967,7 @@ library StormLib {
 //         reentrancyLock = 0;
 //         emit Settled(channelID, partnerAddress, message[START_ADDRS : START_ADDRS + (numTokens * TOKEN_PLUS_BALS_UNIT)]);
 //     }
-// }
+}
 
 
 
