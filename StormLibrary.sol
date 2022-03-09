@@ -552,62 +552,58 @@ library StormLib {
         return (channelID, nonce);
     } 
 
+    //loop over the tokens, and if the balance field is not 0, then we make the requisite calls
+    function addFundsHelper(bytes calldata message, address partnerAddress, Channel storage channel, mapping(address => uint) storage tokenAmounts) private {
+        address tokenAddress;
+        uint amountToAddOwner;
+        uint amountToAddPartner;
+        
+        uint numTokens = uint(uint8(message[NUM_TOKEN]));
+        for (uint8 i = 0; i < numTokens; i++) {
+            assembly { 
+                let startOwnerBal := add(add(add(message.offset, 50), mul(20, numTokens)), mul(i, 64)) //MAGICNUMBERNOTE: 50 bc is start of addrs, and we add 20 * numTokens to this to get start of balances
+                tokenAddress := calldataload(add(add(message.offset, 38), mul(i, 20)))//MAGICNUMBERNOTE: 38 bc is start of addrs, but is only 20 bytes, not 32, so we go to 50 -12 = 38
+                amountToAddOwner := calldataload(startOwnerBal)
+                amountToAddPartner := calldataload(add(startOwnerBal, 32))
+            }
+            //process any owner added funds
+            if (amountToAddOwner != 0) {
+                tokenAmounts[tokenAddress] -= amountToAddOwner;
+            }
+
+            //process any partner added funds
+            if (i == 0 && tokenAddress == address(0) && amountToAddPartner != 0) {
+                //is ETH. Process appropriately
+                require(msg.value == amountToAddPartner, "k"); 
+            } else if (amountToAddPartner != 0) {
+                IERC20 token = IERC20(tokenAddress);
+                bool success = token.transferFrom(partnerAddress, address(this), amountToAddPartner);
+                require(success, "j");
+            }
+            channel.balances[i] += (amountToAddOwner + amountToAddPartner);
+        }
+    }
+
     //add extra owner and partner funds to a channel, provided it is not settling?
     //check both signatures
     //check that channel exists and is not settling. 
     //check the nonce; must be greater than nonce stored. For protocol, this nonce should be equal to the highest nonced msg seen thus far in the channel, so that can still arbitrate on other msg, but also locks in funds at this state.Furthermore, strict greater than prevents replay attack with addFunds calls.
     //For each of the funds given, if not zero, try to add them from the contract(owner), or make the requisite IERC20 calls.
-    function addFundsToChannel(bytes calldata message, bytes calldata signatures, address owner, Channel storage channel, mapping(address => uint) storage tokenAmounts) external returns (uint32 nonce) {
+    function addFundsToChannel(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels, mapping(address => uint) storage tokenAmounts) external returns (uint channelID, uint32 nonce) {
         require (MsgType(uint8(message[0])) == MsgType.ADDFUNDSTOCHANNEL, "p");
-        
         address partnerAddress = checkSignatures(message, signatures, owner);
-
+        channelID = uint(keccak256(message[1: START_ADDRS + (uint(uint8(message[NUM_TOKEN])) * 20)]));  
+        Channel storage channel = channels[channelID];
         require(channel.exists, "u");
         require(!channel.settlementInProgress, "w");
 
+        addFundsHelper(message, partnerAddress, channel, tokenAmounts);
+
         assembly{ nonce := calldataload(add(message.offset, sub(message.length, 32))) } //TO DO: overflow checks?
-        require(nonce > channel.nonce, "x"); //TO DO: probably not necessary?
-
-        //loop over the tokens, and if the balance field is not 0, then we make the requisite calls
-        address tokenAddress;
-        uint amountToAdd;
-        
-        uint numTokens = uint(uint8(message[NUM_TOKEN]));
-        for (uint8 i = 0; i < numTokens; i++) {
-            assembly { 
-                let startPersonBals := add(add(add(message.offset, 50), mul(20, numTokens)), mul(i, 64)) //MAGICNUMBERNOTE: 50 bc is start of addrs, and we add 20 * numTokens to this to get start of balances
-                tokenAddress := calldataload(add(add(message.offset, 38), mul(i, 20)))//MAGICNUMBERNOTE: 38 bc is start of addrs, but is only 20 bytes, not 32, so we go to 50 -12 = 38
-                amountToAdd := calldataload(startPersonBals)
-            }
-            //process any owner added funds
-            if (amountToAdd != 0) {
-                tokenAmounts[tokenAddress] -= amountToAdd;
-                channel.balances[i] += amountToAdd;
-            }
-
-            assembly {
-                let startPersonBals := add(add(add(message.offset, 50), mul(20, numTokens)), add(32, mul(i, 64))) //MAGICNUMBERNOTE: 50 bc is start of addrs, and we add 20 * numTokens to this to get start of balances
-                amountToAdd := calldataload(startPersonBals)
-            }
-            //process any partner added funds
-            if (amountToAdd == 0) {
-                continue;
-            }
-
-            if (i == 0 && tokenAddress == address(0) && amountToAdd != 0) {
-                //is ETH. Process appropriately
-                require(msg.value == amountToAdd, "k"); 
-            } else if (amountToAdd != 0) {
-                IERC20 token = IERC20(tokenAddress);
-                bool success = token.transferFrom(partnerAddress, address(this), amountToAdd);
-                require(success, "j");
-            }
-            channel.balances[i] += amountToAdd;
-        }
+        require(nonce > channel.nonce, "x"); //TO DO: probably not necessary? Could only fail if partners not following protocol.
 
         //set nonce
         channel.nonce = nonce;
-        return nonce;
     }
 
     //helper that distributes the funds, used by settle and settlesubset
