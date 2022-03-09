@@ -25,9 +25,8 @@ pragma solidity ^0.8.7;
     //DOUBLE TO DO: dont think this is possible due to IERC20's needing the contract address to be set for approve call, but can't be done until contract initialized
 //TO DO: decide whether safer to have disputeBlockTimeout, shardBlockTimeouts be set on time, or on blocks.
 
-//TO DO: move as many functions as possible to a library to reduce the contract code size. See this for other helpful tricks: https://ethereum.org/en/developers/tutorials/downsizing-contracts-to-fight-the-contract-size-limit/
-    //TO DO: figure out whether I should make these library functions internal or external.
-    //TO DO: figure out whether I want to try and stick things like event definitions, struct defs in another library, just to save compile time gas.
+
+//TO DO: figure out whether I want to try and stick things like event definitions, struct defs in another library, just to save compile time gas.
 
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
 
@@ -159,7 +158,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 
 library StormLib {
     enum MsgType{ INITIAL, UNCONDITIONAL, SHARDED, SETTLE, SETTLESUBSET, UNCONDITIONALSUBSET, ADDFUNDSTOCHANNEL, SINGLECHAIN, MULTICHAIN }
-
+    enum ShardState { INITIAL, REVERTED, PUSHEDFORWARD, SLASHED } //BOTH TURING, NONTURING start in INITIAL. Have a distinction between initial and reverted for TURINGINCOMPLETE case, so know when secretOwner has revealed both push forward and revert.
     struct SwapStruct {
         uint hashlock;
         uint timeout;
@@ -168,7 +167,7 @@ library StormLib {
     struct Shard {
         mapping(uint8 => uint) givingBalances; //mapping from index in balances, which is index in the array tokens
         mapping(uint8 => uint) receivingBalances;
-        uint8 pushedForward; //indicates whether hashlock owner revealed the secret, and pushed state forward. Now, we have this in an interesting way as a uint8.
+        ShardState shardState; //indicates whether hashlock owner revealed the secret, and pushed state forward. Now, we have this in an interesting way as a uint8.
             //MOTIVATION: create a solution where we dont require Alice to stay live and publish herself in the last hour of the timeout, but don't give Bob/watchtower colluding with Bob any ability to hurt Alice.
             
             //0 indicates that it is in its base state, which is to revert. (TO DO: make base form to push forward? test to see which is more common, then choose one that causes fewest on chain changeShardState calls)
@@ -275,7 +274,7 @@ library StormLib {
         //checks that all of the timeouts have occurred. TO DO: make all of this more gas efficient by avoided repeated SLOAD calls
         for (uint8 shardNo = 0; shardNo < channel.numShards; shardNo++) {
             require(channel.shards[shardNo].shardBlockTimeout < block.number, "d");
-            //TO DO: could allow for faster settle if a claim here that this timeout can be skipped if channels.shards[shardNo].pushedForward == true for nonTuringIncomplete, or channel.shards[shardNo].pushedForward == 3 for TuringIncomplete.
+            //TO DO: could allow for faster settle if a claim here that this timeout can be skipped if channels.shards[shardNo].shardState == true for nonTuringIncomplete, or channel.shards[shardNo].shardState == 3 for TuringIncomplete.
         }
     }
 
@@ -818,7 +817,7 @@ library StormLib {
      * For this call to succeed, there must be a settlement on a Sharded message already in place.
      * Must still call withdraw when timeout ends. Balances are set here, but funds not yet distributed. 
      */
-    function changeShardState(bytes calldata channelIDMsg, uint hashlockPreimage, uint8 shardNo, bool pushForward, mapping(uint => Channel) storage channels) external returns(uint, uint8) {
+    function changeShardState(bytes calldata channelIDMsg, uint hashlockPreimage, uint8 shardNo, bool pushForward, mapping(uint => Channel) storage channels) external returns(uint, ShardState) {
         uint channelID = uint(keccak256(channelIDMsg));
         require(channels[channelID].exists, "u");
         require(channels[channelID].numShards > shardNo, "v");
@@ -831,21 +830,21 @@ library StormLib {
         if (shard.updateIncludesTuringIncomplete) {
             uint hashlock = pushForward ? shard.forwardHashlock : shard.revertHashlock;
             require(hashlock == uint(keccak256(abi.encodePacked(hashlockPreimage))), "A");
-            //slash if pushedForward in revert, reverted in pushForward
-            if ((shard.pushedForward == 1 && pushForward) || (shard.pushedForward == 2 && !pushForward)) {
-                shard.pushedForward = 3;
-            } else if (shard.pushedForward == 0) {
-                shard.pushedForward = pushForward ? 2 : 1;
+            //slash if shardState in revert, reverted in pushForward
+            if ((shard.shardState == ShardState.REVERTED && pushForward) || (shard.shardState == ShardState.PUSHEDFORWARD && !pushForward)) {
+                shard.shardState = ShardState.SLASHED;
+            } else if (shard.shardState == ShardState.INITIAL) {
+                shard.shardState = pushForward ? ShardState.PUSHEDFORWARD : ShardState.REVERTED;
             } else {
                 revert('m');
             }
         } else {
             //nonTuringInc. case. If shard has not been pushed forward; if hashlock given is correct, push forward. But, if less than 1 hour remaining, then slash.
-            require(shard.pushedForward == 0, "m");
+            require(shard.shardState == ShardState.INITIAL, "m");
             require(shard.forwardHashlock == uint(keccak256(abi.encodePacked(hashlockPreimage))), "A");
-            shard.pushedForward = (shard.shardBlockTimeout - block.number > BLOCKS_PER_HOUR) ? 2 : 3;
+            shard.shardState = (shard.shardBlockTimeout - block.number > BLOCKS_PER_HOUR) ? ShardState.PUSHEDFORWARD : ShardState.SLASHED;
         }
-        return (channelID, shard.pushedForward);
+        return (channelID, shard.shardState);
         
     }
 
@@ -894,11 +893,11 @@ library StormLib {
                 tokenAddress := calldataload(add(message.offset, add(37, mul(tokenIndex, 20)))) //MAGICNUMBERNOTE: bc START_ADDRS is at 49, so first addr ends at 69 - 32 = 37
             }
             for (uint8 shardIndex = 0; shardIndex < channel.numShards; shardIndex++) {
-                if (channel.shards[shardIndex].pushedForward == 2) {
+                if (channel.shards[shardIndex].shardState == ShardState.PUSHEDFORWARD) {
                     //pushedFwd. owner is giving the balances, and getting the receiving balances
                     ownerBalance += channel.shards[shardIndex].receivingBalances[tokenIndex];
                     partnerBalance += channel.shards[shardIndex].givingBalances[tokenIndex];
-                } else if (channel.shards[shardIndex].pushedForward == 3) {
+                } else if (channel.shards[shardIndex].shardState == ShardState.SLASHED) {
                     //slashed. This means that hashlock owner has lost all of their funds
                     uint total = channel.shards[shardIndex].receivingBalances[tokenIndex] + channel.shards[shardIndex].givingBalances[tokenIndex];
                     channel.shards[shardIndex].ownerControlsHashlock ? (partnerBalance += total) : (ownerBalance += total);
