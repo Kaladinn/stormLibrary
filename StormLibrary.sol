@@ -433,11 +433,9 @@ library StormLib {
         }
     }
     
-    //TO DO: in multichain, chain on which secret holder is receiving funds must have both a shorter timeout anddd a shorter deadline, where intrachain deadline must also be shorter than timeout.
-        //the reason for this is that we don't want secretholder to delay publishing msg on chain where they are receiving to last second, then publish and leave other chains deadline expired, essentially stealing funds.
-        //furthermore, lets say both are pubbed at same time, we want the redeem period to be shorter on the receiving chain, so nonsecretholder always has time to redeem on their chain. Finally, we need that the timeout is always longer than
-        //the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed. This is partial as is because we store the timeout in the struct that is stored in seenMsgs,
-        //and this struct cant be deleted till timeout has expired
+    //TO DO: in multichain, chain on which secret holder is receiving funds must have both a shorter timeout than other chain. 
+        //the reason for this is that we don't want secretholder to delay redeeming msg on chain where they are receiving to last second, then not leave nonsecretholder enough time to redeem on ther own chain. 
+        //Secondly, we need that the timeout is always longer than the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed.
     function singleSwapStake(bytes calldata message, bytes calldata signatures, uint entryToDelete, address owner, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID, bool singleChain) {
         uint deadline = doAnchorChecks(message);
         address partnerAddress = checkSignatures(message, signatures, owner);
@@ -454,9 +452,7 @@ library StormLib {
         } else {
             require(MsgType(uint8(message[0])) == MsgType.MULTICHAIN, "G");
         }
-        
         processFundsSingleSwap(message, person, singleChain, partnerAddress, tokenAmounts);
-
         if (singleChain) {
             seenSwaps[swapID].timeout = deadline;
         } else {
