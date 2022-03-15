@@ -758,7 +758,7 @@ library StormLib {
             }
             require(uint8(message[shardPointer + numTokens]) == seen, "G"); //make sure that numAmounts corresponds properly with the amounts just seen and iterated over, since will be trusting this number later
             //looped over amounts in the shard, now lets increment the shardPointer to jump and point to the next shard
-            shardPointer += 1 + (32 * uint8(message[shardPointer - 1])); //use lenShard byte to jump ahead to next shard, then jump over lenShard byte to start at oGOR
+            shardPointer += 32 * uint8(message[shardPointer - 1]); //use lenShard byte to jump ahead to next shard
         }
             
         
@@ -856,7 +856,7 @@ library StormLib {
         //jump shardPointer to this shardData
         uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * 84) + 1;//hop over addrs, balances, and the numShards encoding byte to point to first lenShard byte
         for (uint8 i = 0; i < shardNo; i++) {
-            shardPointer += 1 + (32 * uint8(message[shardPointer])); //keep jumping over shards to get to one we want
+            shardPointer += 32 * uint8(message[shardPointer]); //keep jumping over shards to get to one we want
         }
         shardPointer += 1 + numTokens + 1 + (32 * uint8(message[shardPointer + 1 + numTokens])) + 1; //jump shardPointer to shardBlockTimeoutHours, jumping (lenShard + uint[] oGOR + (byte)lenAmount + uint amounts[] + ownerCOntrolsHashlock
         uint shardBlockTimeout;
@@ -922,7 +922,7 @@ library StormLib {
         uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 2; //points now to ownerGivingOrReceiving array of first shard.
         for (uint8 i = 0; i < numShards; i++) {
             ShardState shardState = ShardState(uint8(message[message.length - 32 - (numShards - i)]));
-            uint8 lenAmounts = (32 * uint8(message[shardPointer + numTokens])); //32 * numAmounts
+            uint8 lenAmounts = 32 * uint8(message[shardPointer + numTokens]); //32 * numAmounts
             uint8 ownerControlsHashlock = uint8(message[shardPointer + numTokens + 1 + lenAmounts]);//jump over oGOR, numAmounts, amounts[]
             uint seen = 0;
             for (uint j = 0; j < numTokens; j++) {
@@ -941,7 +941,7 @@ library StormLib {
                     }
                 seen += 1;
                 }
-                shardPointer += 1 + (32 * uint8(message[shardPointer - 1])); //jump shardPointer to shard next lenShard byte, add 1 to get it to next oGOR
+                shardPointer += 32 * uint8(message[shardPointer - 1]); //jump shardPointer to shard next lenShard byte, add 1 to get it to next oGOR
             }
         }
     }
