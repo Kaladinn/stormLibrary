@@ -118,13 +118,12 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 
 //shardData:
     //byte lenShard.  
-        //says how long shard is, makes for easy hopping through shards. 
-        //TO DO: make len encodings 1 => 2 bytes if we want to support more than two tokens swaps. If we just want to support two tokens swaps, then we can probably
-        //simplify this model even further, strip out lenAmounts, make ownerGorReceiving 2 bytes, first is ownerGivingTokenIndex, second is ownerReceivingTokenIndex
+        //says how long shard is, makes for easy hopping through shards. Says length in number of 32 byte jumps needed. i.e. len 4 would cause a jump of 32 * 4 = 128 bytes
+        //NOTE: this means that in lambdas, need to pad to multiples of 32 bytes for each shardMsg (really 32 + 1, since excluding the first lenByte value)
     //uint8[numTokens] ownerGivingOrReceiving: 0: no one. 1: ownerGiving. 2: ownerReceiving
         //says for each token whether not in shard, whether owner is giving it to partner, or whether owner receiving it from partner
-    //byte lenAmounts 
-        // states length of amounts array, or 32 * # or nonzero entries in ownerGivingOrReceiving.  TO DO: see comment for lenShard
+    //byte numAmounts 
+        // states length of amounts array, or # or nonzero entries in ownerGivingOrReceiving. To get len to jump over, do numAmounts * 32
     //uint[] amounts
         //this is only for full of tokens with nonzero value in ownerGivingOrReceiving
     //bool ownerControlsHashlock
@@ -300,7 +299,6 @@ library StormLib {
     function eligibleForWithdraw(bytes calldata message, Channel storage channel, uint numTokens) public view returns (uint8 numShards) {
         require(channel.exists && channel.settlementInProgress, "b");
         require(block.number > channel.disputeBlockTimeout, "c");
-        require(uint256(keccak256(message)) == channel.msgHash, "B");
 
         uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1; //pointing to the first lenShard
         if (MsgType(uint8(message[0])) == MsgType.SHARDED) {
@@ -311,15 +309,15 @@ library StormLib {
         uint shardSubmittedBlock;
         assembly { shardSubmittedBlock := calldataload(sub(add(message.offset, message.length), 32)) }
         for (uint8 i = 0; i < numShards; i++) {
-            uint8 lenAmounts = uint8(message[shardPointer + 1 + numTokens]);
-            uint8 shardBlockTimeoutHours = uint8(message[shardPointer + 1 + numTokens + 1 + lenAmounts + 1]); //jump over lenShard, uint8[] oGOR, lenAmounts, uint[] amounts, ownerControlsHashlock to arrive at shardBlockTimeoutHours
+            uint8 lenAmounts = 32 * uint8(message[shardPointer + 1 + numTokens]); //32 * numAmounts
+            uint8 shardBlockTimeoutHours = uint8(message[shardPointer + 1 + numTokens + 1 + lenAmounts + 1]); //jump over lenShard, uint8[] oGOR, numAmounts, uint[] amounts, ownerControlsHashlock to arrive at shardBlockTimeoutHours
             ShardState shardState = ShardState(uint8(message[message.length - 32 - (numTokens - i)]));
-            if (!(shardState == ShardState.SLASHED || (shardState == ShardState.PUSHEDFORWARD && uint8(message[shardPointer + 1 + numTokens + 1 + lenAmounts + 2]) == 0))) { //jump over lenShard, uint8[] oGOR, lenAmounts, uint[] amounts, ownerControlsHashlock, shardBlockTimeoutHours to arrive at updateIncludesTuringIncomplete
+            if (!(shardState == ShardState.SLASHED || (shardState == ShardState.PUSHEDFORWARD && uint8(message[shardPointer + 1 + numTokens + 1 + lenAmounts + 2]) == 0))) { //jump over lenShard, uint8[] oGOR, numAmounts, uint[] amounts, ownerControlsHashlock, shardBlockTimeoutHours to arrive at updateIncludesTuringIncomplete
                 //if the shard is slashed, or the shard does not include turingIncomplete and is pushedForward, both of these states are irrevocable; nothing can be done to change them
                 //so we automatically consider those shards timed out. Now, in this is statement, we check that these conditions ARENT true. This, we need to make sure that the shard has proeprly timed out
                 require(block.number > shardSubmittedBlock + (shardBlockTimeoutHours * BLOCKS_PER_HOUR), "d");
             } 
-            shardPointer += uint8(message[shardPointer]); //jump ahead to next shard
+            shardPointer += 32 * uint8(message[shardPointer]); //jump ahead to next shard, doing 32 * lenShard
         }
     }
 
@@ -736,9 +734,9 @@ library StormLib {
      */
     function updateShards(Channel storage channel, bytes calldata message, MsgType msgType, uint numTokens) private {
         //check that startDispute is valid. TO DO: check all of these operations, esp assembly, for overflow
-        //I check that lenShard, lenAmounts are valid, because I use these in withdraw, so they need to be accurate
+        //I check that lenShard, numAmounts are valid, because I use these in withdraw, so they need to be accurate
         
-        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens); //points to location of importance in shards. Starts at numShards
+        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens); //points to byte for numShards
         uint8 numShards = (msgType == MsgType.SHARDED) ? uint8(message[shardPointer]) : 0; 
 
         shardPointer += 2; //jump past len numShards byte, len shardByte points to ownerGivingOrReceiving array
@@ -758,9 +756,9 @@ library StormLib {
                     balanceTotalsWithShards[j] += amount;
                 }
             }
-            require(uint8(message[shardPointer + numTokens]) == seen, "G");
+            require(uint8(message[shardPointer + numTokens]) == seen, "G"); //make sure that numAmounts corresponds properly with the amounts just seen and iterated over, since will be trusting this number later
             //looped over amounts in the shard, now lets increment the shardPointer to jump and point to the next shard
-            shardPointer += uint8(message[shardPointer - 1]);
+            shardPointer += 1 + (32 * uint8(message[shardPointer - 1])); //use lenShard byte to jump ahead to next shard, then jump over lenShard byte to start at oGOR
         }
             
         
@@ -858,9 +856,9 @@ library StormLib {
         //jump shardPointer to this shardData
         uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * 84) + 1;//hop over addrs, balances, and the numShards encoding byte to point to first lenShard byte
         for (uint8 i = 0; i < shardNo; i++) {
-            shardPointer += 1 + uint8(message[shardPointer]);
+            shardPointer += 1 + (32 * uint8(message[shardPointer])); //keep jumping over shards to get to one we want
         }
-        shardPointer += 1 + numTokens + 1 + uint8(message[shardPointer + 1 + numTokens]) + 1; //jump shardPointer to shardBlockTimeoutHours, jumping (lenShard + uint[] oGOR + (byte)lenAmount + uint amounts[] + ownerCOntrolsHashlock
+        shardPointer += 1 + numTokens + 1 + (32 * uint8(message[shardPointer + 1 + numTokens])) + 1; //jump shardPointer to shardBlockTimeoutHours, jumping (lenShard + uint[] oGOR + (byte)lenAmount + uint amounts[] + ownerCOntrolsHashlock
         uint shardBlockTimeout;
         assembly { shardBlockTimeout := calldataload(sub(add(message.offset, message.length), 32)) } //accesses blockAtDispute
         shardBlockTimeout += uint(uint8(message[shardPointer])) * BLOCKS_PER_HOUR;//add blockAtDispute + shardblockTimeoutHours * BLOCKS_PER_HOUr
@@ -908,9 +906,7 @@ library StormLib {
      //takes in same message that is stored in msgHash in startDispute, or that has been updated and restored here in changeShardState
     function changeShardState(bytes calldata message, uint hashlockPreimage, uint8 shardNo, bool pushForward, mapping(uint => Channel) storage channels) external returns(uint channelID, ShardState) {
         channelID = doChecksUpdateShard(channels, message, shardNo);
-       
         (ShardState shardStateNew, uint shardMessageIndex) = changeShardStateHelper(message, shardNo, pushForward, hashlockPreimage);
-        
         //construct new msg, swapping in proper value for the updated shard. 
         channels[channelID].msgHash = uint(keccak256(abi.encodePacked(message[0: shardMessageIndex], shardStateNew, message[shardMessageIndex + 1: message.length])));
         return (channelID, shardStateNew); 
@@ -926,16 +922,16 @@ library StormLib {
         uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 2; //points now to ownerGivingOrReceiving array of first shard.
         for (uint8 i = 0; i < numShards; i++) {
             ShardState shardState = ShardState(uint8(message[message.length - 32 - (numShards - i)]));
-            uint8 lenAmounts = uint8(message[shardPointer + numTokens]);
-            uint8 ownerControlsHashlock = uint8(message[shardPointer + numTokens + 1 + lenAmounts]);//jump ver oGOR, lenAmounts, amounts[]
+            uint8 lenAmounts = (32 * uint8(message[shardPointer + numTokens])); //32 * numAmounts
+            uint8 ownerControlsHashlock = uint8(message[shardPointer + numTokens + 1 + lenAmounts]);//jump over oGOR, numAmounts, amounts[]
             uint seen = 0;
             for (uint j = 0; j < numTokens; j++) {
                 uint amount;
                 uint8 person = uint8(message[shardPointer]);
                 if (person == 1 || person == 2) { 
                     //this token is being traded on.
-                    //ownerGivingOrReceiving must be 1 or 2. If {1, revert, initial} => owner. If {2, revert, initial} => partner. If {2, pushForward} => owner. If {1, pushForward} => partner. If {slashed, ownerControls} => partner. If {slashed, partnerControls => owner}
-                    assembly { amount := calldataload(add(add(shardPointer, add(1, numTokens)), mul(seen, 32))) } //points shardPointer over uint8[], lenAmounts byte, to then index into the proper amount in amounts[] 
+                    //ownerGivingOrReceiving must be 1 or 2. If {1, revert/initial} => owner. If {2, revert/initial} => partner. If {2, pushForward} => owner. If {1, pushForward} => partner. If {slashed, ownerControls} => partner. If {slashed, partnerControls => owner}
+                    assembly { amount := calldataload(add(add(shardPointer, add(1, numTokens)), mul(seen, 32))) } //points shardPointer over uint8[], numAmounts byte, to then index into the proper amount in amounts[] 
                     //giveFundsToOwnerCases:
                     if ((person == 1 && (shardState == ShardState.REVERTED || shardState == ShardState.INITIAL)) || (person == 2 && shardState == ShardState.PUSHEDFORWARD) || (ownerControlsHashlock == 0 && shardState == ShardState.SLASHED)) {
                         shardTokenBals[i].ownerBalance += amount;
@@ -945,7 +941,7 @@ library StormLib {
                     }
                 seen += 1;
                 }
-                shardPointer += uint8(message[shardPointer - 1]); //jump shardPointer to shard uint8[] oGOR array
+                shardPointer += 1 + (32 * uint8(message[shardPointer - 1])); //jump shardPointer to shard next lenShard byte, add 1 to get it to next oGOR
             }
         }
     }
@@ -958,7 +954,7 @@ library StormLib {
         channelID = uint(keccak256(message[1: START_ADDRS + (20 * numTokens)]));
         
         Channel storage channel = channels[channelID];    
-
+        require(uint256(keccak256(message)) == channel.msgHash, "B");
         uint8 numShards = eligibleForWithdraw(message, channel, numTokens);
         //all shardBlockTimeouts, disputeBlockTimeout have ended, channel actually exists, it is now safe to send out values
         
@@ -1045,4 +1041,4 @@ library StormLib {
 // D: This channelFunction is not recognized
 // E: Provided balanceTotals does not match hash stored on record
 // F: shardDataMsg does not equal that which is stored on chain. 
-// G: the lenAmounts byte in Shard does not accurately represent the size of the amounts.
+// G: the numAmounts byte in Shard does not accurately represent the size of the amounts.
