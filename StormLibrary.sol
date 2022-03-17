@@ -208,7 +208,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         nonce 
 //     SingleChain
 //         byte msgType
-//         5 bytes zeros (padding) //done so that complies with anchor format, doAnchorChecks is successful
+//         5 bytes zeros (padding) //done so that complies with anchor format, doAnchorChecks can be reused on this
 //         uint24 chainID
 //         address partnerAddress
 //         address contractAddress
@@ -219,8 +219,8 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         uint deadline
 //     MultiChain
 //         byte msgType
-//         3 bytes zeros (padding) //done so that complies with anchor format, doAnchorChecks is successful
-//         bool owner/partnerFlag
+//         3 bytes zeros (padding) //done so that complies with anchor format, doAnchorChecks can be reused on this
+//         bool owner/partnerFlag. 00 if owner is providing the funds, 01 if partner providing
 //         uint8 blockHourTimeout
 //         uint24 chainID
 //         address partnerAddress
@@ -341,10 +341,10 @@ library StormLib {
 
         assembly {
             partnerAddress := calldataload(sub(message.offset, 3)) //MAGICNUMBERNOTE: bc parnterAddr ends at 29, and 29 - 32 = -3
-            r := calldataload(add(signatures.offset, 64))
-            s := calldataload(add(signatures.offset, 96))
+            r := calldataload(add(signatures.offset, 65))
+            s := calldataload(add(signatures.offset, 97))
         }
-        require(address(ecrecover(messageHash, magicETHNumber + uint8(signatures[128]), r, s)) == partnerAddress, "o"); 
+        require(address(ecrecover(messageHash, magicETHNumber + uint8(signatures[129]), r, s)) == partnerAddress, "o"); 
         
     }
 
@@ -392,7 +392,7 @@ library StormLib {
         return assemblyVariable;
     }
 
-    function processFundsSingleSwap(bytes calldata message, uint8 person, bool singleChain, address partnerAddress, mapping(address => uint) storage tokenAmounts) private {
+    function processFundsSingleswap(bytes calldata message, uint8 person, bool singleChain, address partnerAddress, mapping(address => uint) storage tokenAmounts) private {
         //process funds
         uint ownerAmount;
         uint partnerAmount;
@@ -436,7 +436,7 @@ library StormLib {
     //TO DO: in multichain, chain on which secret holder is receiving funds must have both a shorter timeout than other chain. 
         //the reason for this is that we don't want secretholder to delay redeeming msg on chain where they are receiving to last second, then not leave nonsecretholder enough time to redeem on ther own chain. 
         //Secondly, we need that the timeout is always longer than the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed.
-    function singleSwapStake(bytes calldata message, bytes calldata signatures, uint entryToDelete, address owner, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID, bool singleChain) {
+    function singleswapStake(bytes calldata message, bytes calldata signatures, uint entryToDelete, address owner, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID, bool singleChain) {
         uint deadline = doAnchorChecks(message);
         address partnerAddress = checkSignatures(message, signatures, owner);
         swapID = uint(keccak256(message));
@@ -452,7 +452,7 @@ library StormLib {
         } else {
             require(MsgType(uint8(message[0])) == MsgType.MULTICHAIN, "G");
         }
-        processFundsSingleSwap(message, person, singleChain, partnerAddress, tokenAmounts);
+        processFundsSingleswap(message, person, singleChain, partnerAddress, tokenAmounts);
         if (singleChain) {
             seenSwaps[swapID].timeout = deadline;
         } else {
@@ -470,7 +470,7 @@ library StormLib {
     }
 
     //only available/necessary if singleSwap is multichain
-    function singleSwapRedeem(bytes calldata message, uint preimage, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID, uint8 claimed) {
+    function singleswapRedeem(bytes calldata message, uint preimage, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID, uint8 claimed) {
         swapID = uint(keccak256(message));
         require(seenSwaps[swapID].hashlock != 0, "D"); //funds have already been redeemed, or wasn't a multichain in the first place!
         //valid redemption, should now send the proper funds to the proper person
