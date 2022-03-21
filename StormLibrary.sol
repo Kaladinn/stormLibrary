@@ -241,7 +241,9 @@ library StormLib {
     event DisputeStarted(uint indexed channelID, uint32 indexed nonce, StormLib.MsgType indexed msgType); //TO DO: maybe delete msgType?
     event ShardStateChanged(uint indexed channelID, uint8 indexed shardNo, uint preimage, StormLib.ShardState shardStateNew);
     event FundsAddedToChannel(uint indexed channelID, uint32 indexed nonce, bytes tokensAdded);
-    event Swapped(uint indexed msgHash, bool indexed singleChain, uint8 indexed claimed); //claimed == 0 if unclaimed, 1 if claimed, 2 if timed out. Only pertinent in the multiChain case, since single will always revert or succeed.
+    event Swapped(uint indexed msgHash); //in singlechain case, means that swap has completed. In multichain, means that has been anchored
+    event MultichainRedeemed(uint indexed msgHash, bool redeemed, uint hashlock); //redeemed here is a variable that says whether the propoer preimage shown to unlcok funds. If false, means that timeout occurred and funds reverted back to their sources. if redeemed, hashlock is the proper preimage used.
+
     
     enum ChannelFunctionTypes { ANCHOR, UPDATE, ADDFUNDSTOCHANNEL, SETTLE, SETTLESUBSET, STARTDISPUTE, WITHDRAW }
     enum MsgType { INITIAL, UNCONDITIONAL, SHARDED, SETTLE, SETTLESUBSET, UNCONDITIONALSUBSET, ADDFUNDSTOCHANNEL, SINGLECHAIN, MULTICHAIN }
@@ -436,13 +438,13 @@ library StormLib {
     //TO DO: in multichain, chain on which secret holder is receiving funds must have both a shorter timeout than other chain. 
         //the reason for this is that we don't want secretholder to delay redeeming msg on chain where they are receiving to last second, then not leave nonsecretholder enough time to redeem on ther own chain. 
         //Secondly, we need that the timeout is always longer than the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed.
-    function singleswapStake(bytes calldata message, bytes calldata signatures, uint entryToDelete, address owner, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID, bool singleChain) {
+    function singleswapStake(bytes calldata message, bytes calldata signatures, uint entryToDelete, address owner, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID) {
         uint deadline = doAnchorChecks(message);
         address partnerAddress = checkSignatures(message, signatures, owner);
         swapID = uint(keccak256(message));
         require(seenSwaps[swapID].timeout == 0, "C");
 
-        singleChain = false;
+        bool singleChain = false;
         uint8 person;
         uint8 timeoutHours;
         if (MsgType(uint8(message[0])) == MsgType.SINGLECHAIN) {
@@ -470,7 +472,7 @@ library StormLib {
     }
 
     //only available/necessary if singleSwap is multichain
-    function singleswapRedeem(bytes calldata message, uint preimage, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID, uint8 claimed) {
+    function singleswapRedeem(bytes calldata message, uint preimage, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID, bool redeemed) {
         swapID = uint(keccak256(message));
         require(seenSwaps[swapID].hashlock != 0, "D"); //funds have already been redeemed, or wasn't a multichain in the first place!
         //valid redemption, should now send the proper funds to the proper person
@@ -511,12 +513,11 @@ library StormLib {
         if (timedOut) {
             //now safe to fully delete
             delete seenSwaps[swapID];
-            claimed = 2;
         } else {
             //just delete hashlock, not whole structure bc deadline may not have yet timed out, we don't want a replay attack
             delete seenSwaps[swapID].hashlock;
-            claimed = 1;
         }
+        redeemed = (!timedOut); //returns value for redeemed, which is 0 if timedOut, 1 if not timedOut, as desired
     }
     
     
@@ -789,7 +790,7 @@ library StormLib {
         msgType = MsgType(uint8(message[0]));
         if (msgType != MsgType.INITIAL) {
             //if is initial, we dont touch nonce, and leave it initialized to 0. Remember, INITIALS end in a deadline, not a nonce, since nonce is implicitly 0
-            assembly { nonce := calldataload(add(message.offset, sub(message.length, add(4, mul(numTokens, 32))))) } //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 4 bytes for the nonce
+            assembly { nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) } //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 bytes so 4 bytes for the nonce at end
         }
 
          //if after a subset settle, ensure that subset settle has been published
