@@ -658,7 +658,7 @@ library StormLib {
             if (balanceTotal != 0 && (finalNotSubset || (uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + i]) == 1))) {
                 //should settle this token. Either bc nonempty and settle, or nonempty and subsetSettle with flag set
                 assembly {
-                    let startBalOwner := calldataload(add(add(add(message.offset, 50), mul(numTokens, 20)), mul(i, 64))) //MAGICNUMBERNOTE: 50 bc start addrs
+                    let startBalOwner := add(add(add(message.offset, 50), mul(numTokens, 20)), mul(i, 64)) //MAGICNUMBERNOTE: 50 bc start addrs
                     tokenAddress := calldataload(add(add(message.offset, 38), mul(i, 20))) //MAGICNUMBERNOTE: bc START_ADDRS is at 50, so first addr ends at 70, 70 - 32 = 38
                     _ownerBalance := calldataload(startBalOwner)
                     _partnerBalance := calldataload(add(startBalOwner, 32))
