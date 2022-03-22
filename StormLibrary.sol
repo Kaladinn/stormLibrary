@@ -278,6 +278,7 @@ library StormLib {
     uint8 constant NUM_TOKEN = 49;
     uint8 constant START_ADDRS = 50;
     uint8 constant TOKEN_PLUS_BALS_UNIT = 84;
+    address constant NATIVE_TOKEN = address(0);
     
 
     //****************************** Debugging Methods *****************************/
@@ -366,7 +367,7 @@ library StormLib {
                 _partnerBalance := calldataload(add(tokens.offset, add(startBal, add(32, mul(i, 64)))))
             }
             balances[i] = _ownerBalance + _partnerBalance;
-            if (i == 0 && tokenAddress == address(0)) {
+            if (i == 0 && tokenAddress == NATIVE_TOKEN) {
                 //process ETH
                 require(msg.value == _partnerBalance, "k");
             } else {
@@ -394,6 +395,7 @@ library StormLib {
         return assemblyVariable;
     }
 
+    //Goes through, and transfer into the contract the necessary funds
     function processFundsSingleswap(bytes calldata message, uint8 person, bool singleChain, address partnerAddress, mapping(address => uint) storage tokenAmounts) private {
         //process funds
         uint ownerAmount;
@@ -408,7 +410,7 @@ library StormLib {
             tokenAmounts[addr] -= ownerAmount;
             if (singleChain) {
                 //distribute funds instantly
-                if (addr == address(0)) {
+                if (addr == NATIVE_TOKEN) {
                     //is native token
                     payable(partnerAddress).transfer(ownerAmount);
                 } else {
@@ -426,7 +428,7 @@ library StormLib {
                 }
                 tokenAmounts[addr] += partnerAmount;
             }
-            if (addr == address(0)) {
+            if (addr == NATIVE_TOKEN) {
                 require(msg.value == partnerAmount, "k");
             } else {
                 bool success = IERC20(addr).transferFrom(partnerAddress, address(this), partnerAmount);
@@ -449,10 +451,10 @@ library StormLib {
         uint8 timeoutHours;
         if (MsgType(uint8(message[0])) == MsgType.SINGLECHAIN) {
             singleChain = true;
-            person = uint8(message[4]);
-            timeoutHours = uint8(message[5]);
         } else {
             require(MsgType(uint8(message[0])) == MsgType.MULTICHAIN, "G");
+            person = uint8(message[4]);
+            timeoutHours = uint8(message[5]);
         }
         processFundsSingleswap(message, person, singleChain, partnerAddress, tokenAmounts);
         if (singleChain) {
@@ -499,7 +501,7 @@ library StormLib {
         }
         if (person == 0) {
             //is owner, so owner paid, means partner should receive. OR, got flipped up above, so is owner, but partner paid, which means partner gets return
-            if (addr == address(0)) {
+            if (addr == NATIVE_TOKEN) {
                 payable(partnerAddress).transfer(amount);
             } else {
                 bool success = IERC20(addr).transfer(partnerAddress, amount);
@@ -608,7 +610,7 @@ library StormLib {
             }
 
             //process any partner added funds
-            if (i == 0 && tokenAddress == address(0) && amountToAddPartner != 0) {
+            if (i == 0 && tokenAddress == NATIVE_TOKEN && amountToAddPartner != 0) {
                 //is ETH. Process appropriately
                 require(msg.value == amountToAddPartner, "k"); 
             } else if (amountToAddPartner != 0) {
@@ -664,7 +666,7 @@ library StormLib {
                     _partnerBalance := calldataload(add(startBalOwner, 32))
                 }
                 require(balanceTotal >= _ownerBalance + _partnerBalance, "l"); //TO DO: should this be strict equality??
-                if (i == 0 && tokenAddress == address(0)) {
+                if (i == 0 && tokenAddress == NATIVE_TOKEN) {
                     payable(partnerAddress).transfer(_partnerBalance);
                 } else {
                     IERC20 token = IERC20(tokenAddress);
@@ -972,7 +974,7 @@ library StormLib {
         for (uint8 i = 0; i < numTokens; i++) {
             assembly { tokenAddress := calldataload(add(message.offset, add(38, mul(i, 20)))) } //MAGICNUMBERNOTE: bc START_ADDRS is at 50, so first addr ends at 70 - 32 = 38
             //TO DO: could do another check here that no channel overflow, but feels unnecessary bc already been checked, and currently aren't even passing the balanceTotals array.
-            if (i == 0 && tokenAddress == address(0)) {
+            if (i == 0 && tokenAddress == NATIVE_TOKEN) {
                 payable(partnerAddress).transfer(shardTokenBals[i].partnerBalance);   
             } else {
                 IERC20 token = IERC20(tokenAddress);
@@ -985,18 +987,6 @@ library StormLib {
         delete channels[channelID];
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
