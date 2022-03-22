@@ -459,13 +459,13 @@ library StormLib {
             seenSwaps[swapID].timeout = deadline;
         } else {
             uint hashlock;
-            assembly{ hashlock := calldataload(sub(message.length, 64)) } //here, we are storing the hashlock in our variable amount.
+            assembly{ hashlock := calldataload(sub(message.length, 64)) }
             seenSwaps[swapID].hashlock = hashlock;
             seenSwaps[swapID].timeout = block.number + (timeoutHours * BLOCKS_PER_HOUR);
         }
 
         //gas saver, clears out old entries to make putting in our entry above less costly. First checks that deadline has expired, so that can't do replay attack. 
-        if (block.number < seenSwaps[entryToDelete].timeout && seenSwaps[entryToDelete].hashlock == 0) {
+        if (block.number > seenSwaps[entryToDelete].timeout && seenSwaps[entryToDelete].hashlock == 0) {
             delete seenSwaps[entryToDelete];
         }
         
