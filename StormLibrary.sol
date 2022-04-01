@@ -18,6 +18,7 @@ pragma solidity ^0.8.7;
 
 //TO DO: include logic so that if an anchor call fails due to insufficient owner funds, then owner transfers funds to CP, 
     //to pay for the gas costs. Will require the use of an additional data structure so no replay repay gas attack possible.
+    
 
 //TO DO: change contract so that construct supports initializing with array of tokens, funds (in other words, calls out to addFundsToContract). 
     //DOUBLE TO DO: dont think this is possible due to IERC20's needing the contract address to be set for approve call, but can't be done until contract initialized
@@ -43,7 +44,6 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         otherTokens, and also the same address. Also, this needs to be kept track of in an off chain DB, for if this were an on chain variable, it would a). be more expensive. 
 //         b). could allow a party to resubmit an anchor multiple times, as the anchor would get the contractNonce added on chain, have a differnet channelID, 
 //         and would not be recognized as a repeat.
-//         Problem: does not prevent against reuse on another contract w exact same metadata, AND owner used same pk on both chains. We could get around this by including contract Addr in channelID. TO DO: decide if this is necessary vector to protect against. Seems easier to mandata different contracts need to use different secret keys?
 //     uint24 chainID 
 //         (use to differentiate between two blockchains that may have naming overlap, so that is anchored into intended chain). I anticipate 2^24 is a high enough value to capture any chain we may need.
 //     address partnerAddress
@@ -62,7 +62,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
                 //0 indicates that it is in its base state, which is to revert. (TO DO: make base form to push forward? test to see which is more common, then choose one that causes fewest on chain changeShardState calls)
                 //1 (INCLUDESTURINGINCOMPLETE only) indicates that it is in the revert state from a reveal of secret to revertHashlock
                 //2  indicates that it is in the fwd state from a reveal of secret to forwardHashlock
-                //3  indicates that whoever owns hashlcok has cheated in some way. 
+                //3  indicates that whoever owns hashlock has cheated in some way. 
                     
                     //If INCLUDESTURINGINCOMPLETE:
                     // Cheating determined by revealing two secrets. So, if fwd secret pubbed in (1), or revert secret in (2),
@@ -116,24 +116,18 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 // balanceTotalsHash:
     //uint160(keccak256(balanceTotalsMsg))
 
-//shardData:
-    //byte lenShard.  
-        //says how long shard is, makes for easy hopping through shards. Says length in number of 32 byte jumps needed. i.e. len 4 would cause a jump of 32 * 4 = 128 bytes
-        //NOTE: this means that in lambdas, need to pad to multiples of 32 bytes for each shardMsg (really 32 + 1, since excluding the first lenByte value)
-    //uint8[numTokens] ownerGivingOrReceiving: 0: no one. 1: ownerGiving. 2: ownerReceiving
-        //says for each token whether not in shard, whether owner is giving it to partner, or whether owner receiving it from partner
-    //byte numAmounts 
-        // states length of amounts array, or # or nonzero entries in ownerGivingOrReceiving. To get len to jump over, do numAmounts * 32
-    //uint[] amounts
-        //this is only for full of tokens with nonzero value in ownerGivingOrReceiving
-    //bool ownerControlsHashlock
-        //1(true) if owner is the upstream party who created the preimage, 0 if its the partner
+
+//shardData: (static 67)
+    //uint8 tokenIndex.  
+        //Index of the token being traded on. 
+    //uint8 ownerGivingOrReceiving: 0: no one. 1: ownerGiving. 2: ownerReceiving
+        //says whether owner is giving token to partner, or whether owner receiving it from partner
+    //uint amount 
+        // amount being traded on
     //uint8 shardBlockTimeoutHours
         //again, as other timeout, represents hours. 
-    //bool updateIncludesTuringIncomplete
-        //currently, means that it is interwoven with BTC and/or stellar
-    //uint hashlockForward
-    //uint hashlockRevert(only if updateIncludesTuringIncomplete will this be given)
+    //uint hashlock
+
 
 
 
@@ -239,7 +233,7 @@ library StormLib {
     event Settled(uint indexed channelID, bytes tokenBalances);
     event SettledSubset(uint indexed channelID, uint32 indexed nonce, bytes tokenBalances);
     event DisputeStarted(uint indexed channelID, uint32 indexed nonce, StormLib.MsgType indexed msgType); //TO DO: maybe delete msgType?
-    event ShardStateChanged(uint indexed channelID, uint8 indexed shardNo, uint preimage, StormLib.ShardState shardStateNew);
+    event ShardStateChanged(uint indexed channelID, uint8[] indexed shardNos, uint preimage, uint msgHash);
     event FundsAddedToChannel(uint indexed channelID, uint32 indexed nonce, bytes tokensAdded);
     event Swapped(uint indexed msgHash); //in singlechain case, means that swap has completed. In multichain, means that has been anchored
     event MultichainRedeemed(uint indexed msgHash, bool redeemed, uint hashlock); //redeemed here is a variable that says whether the propoer preimage shown to unlcok funds. If false, means that timeout occurred and funds reverted back to their sources. if redeemed, hashlock is the proper preimage used.
@@ -279,6 +273,7 @@ library StormLib {
     uint8 constant START_ADDRS = 50;
     uint8 constant TOKEN_PLUS_BALS_UNIT = 84;
     address constant NATIVE_TOKEN = address(0);
+    uint constant LEN_SHARD = 67;
     
 
     //****************************** Debugging Methods *****************************/
@@ -437,7 +432,7 @@ library StormLib {
         }
     }
     
-    //TO DO: in multichain, chain on which secret holder is receiving funds must have both a shorter timeout than other chain. 
+    //NOTE: in multichain, chain on which secret holder is receiving funds must have both a shorter timeout than other chain. 
         //the reason for this is that we don't want secretholder to delay redeeming msg on chain where they are receiving to last second, then not leave nonsecretholder enough time to redeem on ther own chain. 
         //Secondly, we need that the timeout is always longer than the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed.
     function singleswapStake(bytes calldata message, bytes calldata signatures, uint entryToDelete, address owner, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID) {
@@ -555,7 +550,7 @@ library StormLib {
     * We only update nonce so its cheaper, but do all the checks so a faulty signed msg couldn't permanently lock funds (no higher
     * nonced msgs, cant settle on this one, CP wont respond).
     * update() is only valid for Unconditional messages from an external call, for obvious reasons.
-    * TO DO: Also make this valid for a sharded msg? Seems legit yeah? Or just reserved for non updated state?
+    * Not valid for a sharded Msg. Just call out to the watchtowers, sending them the double sig. TO DO: decide if want to make valid for shardedMsg
     */
     function update(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external {        
         require (MsgType(uint8(message[0])) == MsgType.UNCONDITIONAL, "p");
@@ -733,31 +728,19 @@ library StormLib {
      */
     function updateShards(Channel storage channel, bytes calldata message, MsgType msgType, uint numTokens) private {
         //check that startDispute is valid. TO DO: check all of these operations, esp assembly, for overflow
-        //I check that lenShard, numAmounts are valid, because I use these in withdraw, so they need to be accurate
         
         uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens); //points to byte for numShards
         uint8 numShards = (msgType == MsgType.SHARDED) ? uint8(message[shardPointer]) : 0; 
 
-        shardPointer += 2; //jump past len numShards byte, len shardByte points to ownerGivingOrReceiving array
+        shardPointer += 1; //point to first tokenIndex
         uint[] memory balanceTotalsWithShards = new uint[](numTokens);
         for (uint8 i = 0; i < numShards; i++) { 
             //looping over ownerGivingOrReceivingFirst in shard in shardData
             uint amount;
-            uint seen = 0;
-            for (uint j = 0; j < numTokens; j++) {
-                uint8 ownerGivingOrRecevingBool = uint8(message[shardPointer + j]);
-                if (ownerGivingOrRecevingBool == 1 || ownerGivingOrRecevingBool == 2) {
-                    //owner is sending/receiving this token, so it should exist in amounts arr
-                    assembly {
-                        amount := calldataload(add(add(message.offset, add(shardPointer, add(numTokens, 1))), mul(seen, 32))) //We point shardPointer to jump over uint8[] oGOR, and len encoding byte, then move "seen" tokens into uint[] amounts
-                    }
-                    seen += 1;
-                    balanceTotalsWithShards[j] += amount;
-                }
-            }
-            require(uint8(message[shardPointer + numTokens]) == seen, "G"); //make sure that numAmounts corresponds properly with the amounts just seen and iterated over, since will be trusting this number later
+            assembly { amount := calldataload(add(message.offset, add(shardPointer, 2))) } //point this to the start of amount, which is 2 after tokenIndex
+            balanceTotalsWithShards[uint8(message[shardPointer])] += amount;
             //looped over amounts in the shard, now lets increment the shardPointer to jump and point to the next shard
-            shardPointer += 32 * uint8(message[shardPointer - 1]); //use lenShard byte to jump ahead to next shard
+            shardPointer += LEN_SHARD; //use LEN_SHARD to jump ahead to next shards tokenIndex
         }
             
         
@@ -840,59 +823,65 @@ library StormLib {
         
     }
 
-    function doChecksUpdateShard(mapping(uint => Channel) storage channels, bytes calldata message, uint8 shardNo) private view returns (uint channelID) {
+    function doChecksUpdateShard(mapping(uint => Channel) storage channels, bytes calldata message, uint8[] calldata shardNos) private view returns (uint channelID) {
         require(MsgType(uint8(message[0])) == MsgType.SHARDED, "p");
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
         require(channels[channelID].exists, "u");
-        require(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)]) > shardNo, "v"); //MAGICNUMBERNOTE: this is numShards, which is stored right at end of the ownerPartnerBals
+        uint8 numShards = uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)]);//MAGICNUMBERNOTE: this is numShards, which is stored right at end of the ownerPartnerBals
+        for (uint i = 0; i < shardNos.length; i++) {
+            require(numShards > shardNos[i], "v");
+            if (i != 0) { require(shardNos[i] > shardNos[i - 1]); } //we enforce that shardNos are strictly increasing. Dunno if necessary
+        }
+        
         require(channels[channelID].msgHash == uint(keccak256(message)), "B");
     }
 
     //NOTE: dont pass in numTokens bc will stack overflow
-    function changeShardStateHelper(bytes calldata message, uint8 shardNo, bool pushForward, uint hashlockPreimage) private view returns (ShardState shardStateNew, uint shardMessageIndex) {
+    function changeShardStateHelper(bytes calldata message, uint8[] calldata shardNos, uint hashlockPreimage) private view returns (uint) {
         uint numTokens = uint(uint8(message[0]));
-        //jump shardPointer to this shardData
-        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * 84) + 1;//hop over addrs, balances, and the numShards encoding byte to point to first lenShard byte
-        for (uint8 i = 0; i < shardNo; i++) {
-            shardPointer += 32 * uint8(message[shardPointer]); //keep jumping over shards to get to one we want
-        }
-        shardPointer += 1 + numTokens + 1 + (32 * uint8(message[shardPointer + 1 + numTokens])) + 1; //jump shardPointer to shardBlockTimeoutHours, jumping (lenShard + uint[] oGOR + (byte)lenAmount + uint amounts[] + ownerCOntrolsHashlock
+
+        uint numShards = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)]));
+        ShardState[] memory shardStatesNew = new ShardState[](numShards);
+        assembly { calldatacopy(add(shardStatesNew, 32),  add(message.offset, sub(message.length, add(32, numTokens))), numShards) } //store the current shardDataMsgs in shardStatesNew
+
         uint shardBlockTimeout;
         assembly { shardBlockTimeout := calldataload(sub(add(message.offset, message.length), 32)) } //accesses blockAtDispute
-        shardBlockTimeout += uint(uint8(message[shardPointer])) * BLOCKS_PER_HOUR;//add blockAtDispute + shardblockTimeoutHours * BLOCKS_PER_HOUr
+        for (uint i = 0; i < shardNos.length; i++) {
+            uint shardPointer = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * 84) + 1 + (shardNos[i] * LEN_SHARD) + 34])); //point this to proper shards tokenIndex, jumpin over tokenBalances, numShards, prior shards, and then tokenIndex, oGoR, amount
+            require(block.number <= shardBlockTimeout + uint(uint8(message[shardPointer])) * BLOCKS_PER_HOUR, "e"); //add blockAtDispute + shardblockTimeoutHours * BLOCKS_PER_HOUr
+            address partnerAddress;
+            assembly { partnerAddress := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: so that reads up to -3 + 32 = 29, which is where partnerAddress ends in message
         
-        require(block.number <= shardBlockTimeout, "e");
-        address partnerAddress;
-        assembly{ partnerAddress := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: so that reads up to -3 + 32 = 29, which is where partnerAddress ends in message
+            // shardMessageIndex = message.length - 32 - (numTokens - shardNos[i]);
+            // ShardState shardState = ShardState(uint8(message[shardMessageIndex]));//extract out shard state stored. is the index at which the shard is storing shardState in shardDataMsg
         
-        shardMessageIndex = message.length - 32 - (numTokens - shardNo);
-        ShardState shardState = ShardState(uint8(message[shardMessageIndex]));//extract out shard state stored. is the index at which the shard is storing shardState in shardDataMsg
-        shardStateNew;
-        
-        if (uint8(message[shardPointer + 1]) == 1) {
-            //updateIncludesTuringIncomplete
-            shardPointer += pushForward ? 2 : 34; //point it to either start forwardHashlock, or revertHashlock
-            uint hashlock;
-            assembly { hashlock := calldataload(add(message.offset, shardPointer)) }
-            require(hashlock == uint(keccak256(abi.encodePacked(hashlockPreimage))), "A");
+            if (uint8(message[shardPointer + 1]) == 1) {
+                //TO DO: this may be subject to change whether or not we even have this flag, or even a distinction between turing complete/incomplete. Currently dont.
+                // //updateIncludesTuringIncomplete
+                // shardPointer += pushForward ? 2 : 34; //point it to either start forwardHashlock, or revertHashlock
+                // uint hashlock;
+                // assembly { hashlock := calldataload(add(message.offset, shardPointer)) }
+                // require(hashlock == uint(keccak256(abi.encodePacked(hashlockPreimage))), "A");
 
-            //slash if second reveal of a hashlock. Else, update to either pushedForward, reverted. 
-            if ((shardState == ShardState.REVERTED && pushForward) || (shardState == ShardState.PUSHEDFORWARD && !pushForward)) {
-                shardStateNew = ShardState.SLASHED;
-            } else if (shardState == ShardState.INITIAL) {
-                shardStateNew = pushForward ? ShardState.PUSHEDFORWARD : ShardState.REVERTED;
+                // //slash if second reveal of a hashlock. Else, update to either pushedForward, reverted. 
+                // if ((shardState == ShardState.REVERTED && pushForward) || (shardState == ShardState.PUSHEDFORWARD && !pushForward)) {
+                //     shardStateNew = ShardState.SLASHED;
+                // } else if (shardState == ShardState.INITIAL) {
+                //     shardStateNew = pushForward ? ShardState.PUSHEDFORWARD : ShardState.REVERTED;
+                // } else {
+                //     revert('m'); //revert if trying to revert already revert, push forward already forward, or do anything with a slashed state
+                // }
             } else {
-                revert('m'); //revert if trying to revert already revert, push forward already forward, or do anything with a slashed state
+                //nonTuringInc. case. If shard has not been pushed forward; if hashlock given is correct, push forward. But, if less than 1 hour remaining, then slash.
+                uint hashlock;
+                assembly { hashlock := calldataload(add(message.offset, add(shardPointer, 1))) } //MAGICNUMBERNOTE: 1 is just to jump over shardBlockTimeout
+                require(hashlock == uint(keccak256(abi.encodePacked(hashlockPreimage))), "A");
+                shardStatesNew[i] = ShardState.PUSHEDFORWARD;
             }
-        } else {
-            //nonTuringInc. case. If shard has not been pushed forward; if hashlock given is correct, push forward. But, if less than 1 hour remaining, then slash.
-            uint hashlock;
-            assembly { hashlock := calldataload(add(message.offset, add(shardPointer, 2))) }
-            require(shardState == ShardState.INITIAL, "m");
-            require(hashlock == uint(keccak256(abi.encodePacked(hashlockPreimage))), "A");
-            shardStateNew = (block.number + BLOCKS_PER_HOUR <= shardBlockTimeout) ? ShardState.PUSHEDFORWARD : ShardState.SLASHED; 
         }
+        //construct new msg, swapping in proper value for the updated shard(s)
+        return uint(keccak256(abi.encodePacked(message[0: message.length - 32 - numTokens], shardStatesNew, message[message.length - 32: message.length])));
     }
 
 
@@ -900,16 +889,14 @@ library StormLib {
      * Done to push either push fwd(normal, turing incomplete), or revert(turing incomplete) a shard. 
      * For this call to succeed, there must be a settlement on a Sharded message already in place.
      * Must still call withdraw when timeout ends. Balances are set here, but funds not yet distributed. 
+     * This can be called for an array of shardNos provided they all share the same hashlock.
      */
      //message here is the message that was stored for channel.msgHash + shardStateChangeData
      //takes in same message that is stored in msgHash in startDispute, or that has been updated and restored here in changeShardState
-    function changeShardState(bytes calldata message, uint hashlockPreimage, uint8 shardNo, bool pushForward, mapping(uint => Channel) storage channels) external returns(uint channelID, ShardState) {
-        channelID = doChecksUpdateShard(channels, message, shardNo);
-        (ShardState shardStateNew, uint shardMessageIndex) = changeShardStateHelper(message, shardNo, pushForward, hashlockPreimage);
-        //construct new msg, swapping in proper value for the updated shard. 
-        channels[channelID].msgHash = uint(keccak256(abi.encodePacked(message[0: shardMessageIndex], shardStateNew, message[shardMessageIndex + 1: message.length])));
-        return (channelID, shardStateNew); 
-        
+    function changeShardState(bytes calldata message, uint hashlockPreimage, uint8[] calldata shardNos, mapping(uint => Channel) storage channels) external returns(uint channelID, uint msgHash) {
+        channelID = doChecksUpdateShard(channels, message, shardNos);
+        msgHash = changeShardStateHelper(message, shardNos, hashlockPreimage);
+        channels[channelID].msgHash = msgHash;
     }
 
 
