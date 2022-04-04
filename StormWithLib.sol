@@ -10,14 +10,16 @@
 
  * You also need to make sure that the .deps file is pointing to the correct github thing. Remix will save your deps, and if you update the github, wont repull, so you
  * have to go in, delete the .deps, then recompile. https://remix-ide.readthedocs.io/en/latest/import.html
+
+ * Finally, you need to go through and take every instance of __$......$__ and replace it with the exact address in the bytecode.
 */
 
 pragma solidity ^0.8.7;
 
-
+// import './githubFolder/ERC20.sol';
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
-import "./StormLibrary.sol";//TO DO: fix this with proper string value from github, or from actual contract usage.
-// import "https://github.com/Kaladinn/stormLibrary/blob/main/StormLibrary.sol";
+// import "./githubFolder/StormLibrary.sol";//TO DO: fix this with proper string value from github, or from actual contract usage.
+import "https://github.com/Kaladinn/stormLibrary/blob/main/StormLibrary.sol";
 
 
 contract Storm {
