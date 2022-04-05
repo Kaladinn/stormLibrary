@@ -29,6 +29,8 @@ pragma solidity ^0.8.7;
 //TO DO: make sure I dont declare a channel, but then use channels[channelID] unnecessarily later in the same fn. 
 
 //TO DO: if makes a difference gas wise, cram all same slot storage variables in at once, rather than 1 at a time. 
+
+//TODO: do we want to strip out disputeBlockTimeout altogether and enfore it to be say, 2 hours, or 1 hour, or 30 mins, or a contract constant that is blockcahin dependent.
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
 
 
@@ -120,7 +122,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //shardData: (static 67)
     //uint8 tokenIndex.  
         //Index of the token being traded on. 
-    //uint8 ownerGivingOrReceiving: 0: no one. 1: ownerGiving. 2: ownerReceiving
+    //uint8 ownerGivingOrReceiving: 0: ownerReceiving. 1: ownerGiving
         //says whether owner is giving token to partner, or whether owner receiving it from partner
     //uint amount 
         // amount being traded on
@@ -901,34 +903,53 @@ library StormLib {
 
 
     
-
+//uint8 tokenIndex.  
+        //Index of the token being traded on. 
+    //uint8 ownerGivingOrReceiving: 0: no one. 1: ownerGiving. 2: ownerReceiving
+        //says whether owner is giving token to partner, or whether owner receiving it from partner
+    //uint amount 
+        // amount being traded on
+    //uint8 shardBlockTimeoutHours
+        //again, as other timeout, represents hours. 
+    //uint hashlock
 
     function addShardsInWithdraw(bytes calldata message, BalancePair[] memory shardTokenBals, uint numTokens, uint8 numShards) pure private {
         //we will go through and add all the shard information to shardTokenBals.
-        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 2; //points now to ownerGivingOrReceiving array of first shard.
+        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1; //points now to tokenIndex of first shard.
         for (uint8 i = 0; i < numShards; i++) {
             ShardState shardState = ShardState(uint8(message[message.length - 32 - (numShards - i)]));
-            uint8 lenAmounts = 32 * uint8(message[shardPointer + numTokens]); //32 * numAmounts
-            uint8 ownerControlsHashlock = uint8(message[shardPointer + numTokens + 1 + lenAmounts]);//jump over oGOR, numAmounts, amounts[]
-            uint seen = 0;
-            for (uint j = 0; j < numTokens; j++) {
-                uint amount;
-                uint8 person = uint8(message[shardPointer]);
-                if (person == 1 || person == 2) { 
-                    //this token is being traded on.
-                    //ownerGivingOrReceiving must be 1 or 2. If {1, revert/initial} => owner. If {2, revert/initial} => partner. If {2, pushForward} => owner. If {1, pushForward} => partner. If {slashed, ownerControls} => partner. If {slashed, partnerControls => owner}
-                    assembly { amount := calldataload(add(add(shardPointer, add(1, numTokens)), mul(seen, 32))) } //points shardPointer over uint8[], numAmounts byte, to then index into the proper amount in amounts[] 
-                    //giveFundsToOwnerCases:
-                    if ((person == 1 && (shardState == ShardState.REVERTED || shardState == ShardState.INITIAL)) || (person == 2 && shardState == ShardState.PUSHEDFORWARD) || (ownerControlsHashlock == 0 && shardState == ShardState.SLASHED)) {
-                        shardTokenBals[i].ownerBalance += amount;
-                    } else {
-                        //we don't bother checking whether this is going to partner. By process of elim, since not going to owner, must be going to partner
-                        shardTokenBals[i].partnerBalance += amount;
-                    }
-                seen += 1;
-                }
-                shardPointer += 32 * uint8(message[shardPointer - 1]); //jump shardPointer to shard next lenShard byte, add 1 to get it to next oGOR
+            uint amount;
+            bool ownerGiving = uint8(message[shardPointer + 1]) == 1; //jumps shardPointer over tokenIndex
+            assembly { amount := calldataload(add(message.offset, add(shardPointer, 2))) } //MAGICNUMBERNOTE: jumps over tokenINdex, ownerGoR
+            if ((ownerGiving && (shardState == ShardState.REVERTED || shardState == ShardState.INITIAL)) || (!ownerGiving && shardState == ShardState.PUSHEDFORWARD)) { //} || (ownerControlsHashlock == 0 && shardState == ShardState.SLASHED)) {
+                //owner was giving and the funds reverted, so owner gets them back, or owner was receiving and it was pushed through, so owner actually gets them.
+                shardTokenBals[i].ownerBalance += amount;
+            } else {
+                //owner was giving and funds pushed through, so partner gets them, or partner was receiving and reverted, so partner gets them back
+                shardTokenBals[i].partnerBalance += amount;
             }
+            shardPointer += LEN_SHARD;
+            // uint8 lenAmounts = 32 * uint8(message[shardPointer + numTokens]); //32 * numAmounts
+            // uint8 ownerControlsHashlock = uint8(message[shardPointer + numTokens + 1 + lenAmounts]);//jump over oGOR, numAmounts, amounts[]
+            // uint seen = 0;
+            // for (uint j = 0; j < numTokens; j++) {
+            //     uint amount;
+            //     uint8 person = uint8(message[shardPointer]);
+            //     if (person == 1 || person == 2) { 
+            //         //this token is being traded on.
+            //         //ownerGivingOrReceiving must be 1 or 2. If {1, revert/initial} => owner. If {2, revert/initial} => partner. If {2, pushForward} => owner. If {1, pushForward} => partner. If {slashed, ownerControls} => partner. If {slashed, partnerControls => owner}
+            //         assembly { amount := calldataload(add(add(shardPointer, add(1, numTokens)), mul(seen, 32))) } //points shardPointer over uint8[], numAmounts byte, to then index into the proper amount in amounts[] 
+            //         //giveFundsToOwnerCases:
+            //         if ((person == 1 && (shardState == ShardState.REVERTED || shardState == ShardState.INITIAL)) || (person == 2 && shardState == ShardState.PUSHEDFORWARD) || (ownerControlsHashlock == 0 && shardState == ShardState.SLASHED)) {
+            //             shardTokenBals[i].ownerBalance += amount;
+            //         } else {
+            //             //we don't bother checking whether this is going to partner. By process of elim, since not going to owner, must be going to partner
+            //             shardTokenBals[i].partnerBalance += amount;
+            //         }
+            //     seen += 1;
+            //     }
+            //     shardPointer += 32 * uint8(message[shardPointer - 1]); //jump shardPointer to shard next lenShard byte, add 1 to get it to next oGOR
+            // }
         }
     }
 

@@ -158,7 +158,7 @@ contract Storm {
         } else { revert('D'); }
 
         //unlock and contract that calls out to IERC20, which are all but update and startdispute
-        if (channelFunction != StormLib.ChannelFunctionTypes.UPDATE && channelFunction != StormLib.ChannelFunctionTypes.STARTDISPUTE) { reentrancyLock = 1; }
+        if (channelFunction != StormLib.ChannelFunctionTypes.UPDATE && channelFunction != StormLib.ChannelFunctionTypes.STARTDISPUTE) { reentrancyLock = 0; }
     }
 
 
