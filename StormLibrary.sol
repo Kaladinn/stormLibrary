@@ -23,9 +23,12 @@ pragma solidity ^0.8.7;
     //Additions needed:
         //Kaladin can only withdraw if lockCount == 0. we need that if owner withdraws, Kaladin can withdraw(to prevent owner keeping a single inconsequential swap open, stopping Kaladin from ever collecting fees)
             //but Kaladin can only withdraw if lockCount == 0 and owner has already withdraw, since Kaladin skimming differences.
-            //TODO: make this better
-        //Function Kaladin can hit with a signature to get paid.
-        //Way for owner to withdraw without self destruct AND self destruct not possible till Kaladin withdraw.
+            //TODO: make this better. One idea is to allow Kaladin to withdraw provided that they supply an array of [channelID, balanceTotalsHash]. For every one of these, they need to 
+                //match with an current channelID, and the len(array) == lockCount. For each one, we add their totals to the tokenAmounts. Then after this, we can withdraw the difference between the tokenAmounts and the total in the contract
+                //The difficulty here is that this requires the channels to not change rapidly, for our array will likely be out of date— for this, sean can stop allowing route calls for a bit before trying to take funds, which will help our chances
+                //(we can do nothing about, increaseChannelFunds, settle, settleSubset calls). This will also be relatively expensive, so probably only makes sense to do this for high traffic contracts.
+        //Function Kaladin can hit (with a signature?) to get paid.
+        //Way for owner to withdraw without self destruct AND self destruct not possible till Kaladin withdraw. Or, self destruct also pays out to Kaladin. 
 
     //Trickinesses:
         //When updating shards, we need to make sure that regardless of which direction the shard goes, it still wont be the case that the fees
