@@ -1,6 +1,51 @@
 // SPDX-License-Identifier: UNLICENSED
 
 pragma solidity ^0.8.7;
+
+//IDEA: Kaladin Fees:
+    //Constants: 
+        //totalFee: x
+        //Kaladin percentage: y
+        //routeFee: x - (x * y)
+        //Kaladin Fee: x * y. (i.e. Kaladin fee is a percentage of route fee.)
+    //we have two fields, ownerTotalSent, partnerTotalSent, for each one of the tokens. These are only used during a settle call, or during a 
+    //startDispute call. We could monkey around with where we want to pass them, just check that they are double signed. 
+    //For the partnerTotalSent in each token, they are paying fees on this. So their token total is total - (total * totalFee). We then increment ownerTotal by total * routeFee.
+    //For the ownerTotalSent, these fees are being paid to the partner, so we increment partnerFunds by routeFee and decrement ownerFunds by totalFee.
+    //NOTE that an extra KaladinFee * (ownerTotalSent * partnerTotalSent) remains in the contract, but wont get added to owner funds.
+    //Thus, when the owner goes to withdraw all of their funds at the very end, they can't withdraw all of the funds. The remaining funds are able to be claimed by Kaladin. We skim the difference!
+    //This method saves us the need to set even more state variables after a swap completes.
+
+    //These are just the fees... we also need to worry about KALADIMES!
+        //For this, their amounts Kaladimes will be some function of the amount of ownerTotalSent, partnerTotalSent, where you receives more Kaladimes the more you send,
+        //and contract owners are rewarded with significantly higher amounts.
+
+    //Additions needed:
+        //Kaladin can only withdraw if lockCount == 0. we need that if owner withdraws, Kaladin can withdraw(to prevent owner keeping a single inconsequential swap open, stopping Kaladin from ever collecting fees)
+            //but Kaladin can only withdraw if lockCount == 0 and owner has already withdraw, since Kaladin skimming differences.
+            //TODO: make this better
+        //Function Kaladin can hit with a signature to get paid.
+        //Way for owner to withdraw without self destruct AND self destruct not possible till Kaladin withdraw.
+
+    //Trickinesses:
+        //When updating shards, we need to make sure that regardless of which direction the shard goes, it still wont be the case that the fees
+        //exceed the amount available in the channel.
+        //When figuring out how to pay Kaladimes, how do we know the conversion rate between a random IERC20 and a Kaladime? A: call out to Uniswap contract to get the conversion rate?
+        //How do we approve to the contract Kaladimes, so they can transferFrom and transfer and arbitrary amount.
+
+
+    //Projected Fees for n tokens:
+        //21k: for a call to chain
+        //??: on chain logic
+        //7300 * n: for call to partnerIERC20 transfers
+        //5000 * n: for setting contract state variable balances
+        //17300: 12300 for changing transferFrom(contract, partnerAddr)on Kaladime contract + 5000k for changing Kaladime state variable balance for owner
+        //2500 * n: calls out to the Uniswap "price feeds"
+        //Total: 38300 + ?? + 14800 * n.  
+
+
+
+
 //TO DO: get fees paid out to Kaladin, settlers/watchtowers (in KLD?) figured out
 //TO DO: get rewards paid in Kaladimes for making/taking trades, etc figured and paid out. 
     //IDEA: could have KLD balance as a state variable. For every "single" swap, we can increment this balance as a function of amount, and for every anchor we could do the same thing(even fancier, we pay out to anchor as an increasing fucntion dependent on time spent in the channel to encourage less anchors, exits).
