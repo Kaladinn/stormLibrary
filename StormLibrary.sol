@@ -48,12 +48,8 @@ pragma solidity ^0.8.7;
 
 
 
-
-//TO DO: get fees paid out to Kaladin, settlers/watchtowers (in KLD?) figured out
-//TO DO: get rewards paid in Kaladimes for making/taking trades, etc figured and paid out. 
-    //IDEA: could have KLD balance as a state variable. For every "single" swap, we can increment this balance as a function of amount, and for every anchor we could do the same thing(even fancier, we pay out to anchor as an increasing fucntion dependent on time spent in the channel to encourage less anchors, exits).
-    //Finally, at any time a owner can call out on the contract, saying 'send my KLD elsewhere'. This will then call out a specialTransfer call to the IERC20 protocol to allow transferring these funds. 
-    //The way this will work to dynamically support whatever value of funds is that there is a treasury address with lots of KLD. When you call out to the contract factory, this contract is created, and given proper permissions in the KLD contract to transfer funds from this treasury address.
+//TODO: get paying with one address (on enter, exit) but actually signing msgs with a separate one, so that a user
+    //can use wallet to sign etner, get funds in wallet at exit, but wont have ot touch wallet for all of sigs. WIll just be touching the chromelocalstorage key for msg signing
 
 //TO DO: make sure that the nonces of all the msg types are incremented appropriately (in here and protocol wise) so that there are no bugs with a potential > vs >=, etc.
 //TO DO: determine if we want some notion of slashing for getting trumped. Would need a clause that only allows slash if trump 2+ higher. Can't do 1 higher, bc this happens when waiting in aRc or cLa if party goes unresponsive.
@@ -177,7 +173,6 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
     //uint8 shardBlockTimeoutHours
         //again, as other timeout, represents hours. 
     //uint hashlock
-
 
 
 
