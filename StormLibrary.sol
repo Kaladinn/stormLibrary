@@ -93,7 +93,10 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //     uint24 chainID 
 //         (use to differentiate between two blockchains that may have naming overlap, so that is anchored into intended chain). I anticipate 2^24 is a high enough value to capture any chain we may need.
 //     address partnerAddress
+//         the address of the person providing funds. This is where funds are received from, and sent to. This sig is only checked in anchor and singleswapStake
 //     address contractAddress
+//     address signerAddress
+//         the address that the partner person uses to sign messages. This may be the same as partnerAddress.
 //     byte numTokens
 //         represents number of 20 byte ERC20 addrs below that are in contract. Note this is limited to 255 by nature of being a byte. 
 //     address[] tokens:
@@ -314,8 +317,8 @@ library StormLib {
     uint constant BLOCKS_PER_HOUR = 240;
     
     //MAGIC NUMBERS
-    uint8 constant NUM_TOKEN = 49;
-    uint8 constant START_ADDRS = 50;
+    uint8 constant NUM_TOKEN = 69;
+    uint8 constant START_ADDRS = 70;
     uint8 constant TOKEN_PLUS_BALS_UNIT = 84;
     address constant NATIVE_TOKEN = address(0);
     uint constant LEN_SHARD = 67;
@@ -369,9 +372,10 @@ library StormLib {
     /**
      * checks that given a message and two pairs of signatures, the signatures are valid for the keccak of the message,
      * given that ownerSignature matches owner of the contract, and partnerSignature matches partnerAaddress that is embedded in message as part of pairID.
-     * Signatures are ECDSA sigs in the form v || r || s. Also, signatures in form ownerSignature | partnerSignature
+     * Signatures are ECDSA sigs in the form v || r || s. Also, signatures in form ownerSignature | partnerSignature.
+     * Is anchor states whether we should use partnerAddr(anchoring), or signerAddr(everything else)
      */
-    function checkSignatures(bytes calldata message, bytes calldata signatures, address owner) private pure returns (address partnerAddress) {
+    function checkSignatures(bytes calldata message, bytes calldata signatures, address owner, address nonOwnerAddr) private pure {
         bytes32 messageHash = keccak256(message);
         bytes32 r;
         bytes32 s;
@@ -383,12 +387,10 @@ library StormLib {
         require(address(ecrecover(messageHash, magicETHNumber + uint8(signatures[64]), r, s)) == owner, "n");
 
         assembly {
-            partnerAddress := calldataload(sub(message.offset, 3)) //MAGICNUMBERNOTE: bc parnterAddr ends at 29, and 29 - 32 = -3
             r := calldataload(add(signatures.offset, 65))
             s := calldataload(add(signatures.offset, 97))
         }
-        require(address(ecrecover(messageHash, magicETHNumber + uint8(signatures[129]), r, s)) == partnerAddress, "o"); 
-        
+        require(address(ecrecover(messageHash, magicETHNumber + uint8(signatures[129]), r, s)) == nonOwnerAddr, "o"); 
     }
 
 
@@ -482,7 +484,9 @@ library StormLib {
         //Secondly, we need that the timeout is always longer than the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed.
     function singleswapStake(bytes calldata message, bytes calldata signatures, uint entryToDelete, address owner, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID) {
         uint deadline = doAnchorChecks(message);
-        address partnerAddress = checkSignatures(message, signatures, owner);
+        address partnerAddress;
+        assembly { partnerAddress := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: sits at finish at 29, and 29 - 32 = -3
+        checkSignatures(message, signatures, owner, partnerAddress);
         swapID = uint(keccak256(message));
         require(seenSwaps[swapID].timeout == 0, "C");
 
@@ -571,7 +575,9 @@ library StormLib {
      */
     function anchor(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels, mapping(address => uint) storage tokenAmounts) external returns (uint) {
         doAnchorChecks(message);
-        address partnerAddress = checkSignatures(message, signatures, owner); 
+        address partnerAddress;
+        assembly { partnerAddress := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: partnerAddress sits at finish at 29, and 29 - 32 = -3
+        checkSignatures(message, signatures, owner, partnerAddress);
         require(MsgType(uint8(message[0])) == MsgType.INITIAL, "p");
     
         uint numTokens = uint(uint8(message[NUM_TOKEN])); //otherwise, when multiplying, will overflow
@@ -600,8 +606,9 @@ library StormLib {
     function update(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external {        
         require (MsgType(uint8(message[0])) == MsgType.UNCONDITIONAL, "p");
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
-
+        address signerAddress;
+        assembly { signerAddress := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: signerAddr sits at finish at 69, and 69 - 32 = 37
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, signerAddress); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
         uint channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
         Channel storage channel = channels[channelID];
         require(channel.exists, "u");
@@ -614,7 +621,7 @@ library StormLib {
         uint balanceTotal;
         for (uint8 i = 0; i < numTokens; i++){
             assembly {
-                let startBals := add(add(message.offset, 50), mul(numTokens, 20)) //MAGICNUMBERNOTE: 50 for START_ADDRS
+                let startBals := add(add(message.offset, 70), mul(numTokens, 20)) //MAGICNUMBERNOTE: 70 for START_ADDRS
                 _ownerBalance := calldataload(add(startBals, mul(i, 64)))
                 _partnerBalance := calldataload(add(add(startBals, 32), mul(i, 64)))
                 balanceTotal := calldataload(add(add(startBals, mul(numTokens, 64)), mul(i, 32))) //MAGICNUMBERNOTE: starts at end of balances (hence numTokens* 64)
@@ -629,20 +636,22 @@ library StormLib {
     } 
 
     //loop over the tokens, and if the balance field is not 0, then we make the requisite calls
-    function addFundsHelper(bytes calldata message, address partnerAddress, uint numTokens, mapping(address => uint) storage tokenAmounts) private returns (uint160 balanceTotalsHashNew) {
+    function addFundsHelper(bytes calldata message, uint numTokens, mapping(address => uint) storage tokenAmounts) private returns (uint160 balanceTotalsHashNew) {
         address tokenAddress;
         uint amountToAddOwner;
         uint amountToAddPartner;
         uint prevBalanceTotal;
+        address partnerAddress; //is calced here not in addFundsToChannel, bc msg sig was based off of signerAddr, whihc may not actually have possession of funds
+        assembly { partnerAddress := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: -3 bc ends at 29, 29 - 32 = -3
 
         uint[] memory balanceTotalsNew = new uint[](numTokens);
         for (uint8 i = 0; i < numTokens; i++) {
             assembly { 
-                let startBalOwner := add(add(add(message.offset, 50), mul(20, numTokens)), mul(i, 64)) //MAGICNUMBERNOTE: 50 bc is start of addrs, and we add 20 * numTokens to this to get start of balances
-                tokenAddress := calldataload(add(add(message.offset, 38), mul(i, 20)))//MAGICNUMBERNOTE: 38 bc 50 is start of addrs, but is only 20 bytes, not 32, so we go to 50 -12 = 38
+                let startBalOwner := add(add(add(message.offset, 70), mul(20, numTokens)), mul(i, 64)) //MAGICNUMBERNOTE: 70 bc is start of addrs, and we add 20 * numTokens to this to get start of balances
+                tokenAddress := calldataload(add(add(message.offset, 58), mul(i, 20)))//MAGICNUMBERNOTE: 58 bc 70 is start of addrs, but is only 20 bytes, not 32, so we go to 70 -12 = 58
                 amountToAddOwner := calldataload(startBalOwner)
                 amountToAddPartner := calldataload(add(startBalOwner, 32))
-                prevBalanceTotal := calldataload(add(add(add(message.offset, 50), mul(numTokens, 84)), mul(i, 32))) //MAGICNUMBERNOTE: starts at end of balances (hence numTokens* 64)
+                prevBalanceTotal := calldataload(add(add(add(message.offset, 70), mul(numTokens, 84)), mul(i, 32))) //MAGICNUMBERNOTE: 70 for start_addrs. starts at end of balances (hence numTokens* 84)
             }
             //process any owner added funds
             if (amountToAddOwner != 0) {
@@ -671,7 +680,9 @@ library StormLib {
     function addFundsToChannel(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels, mapping(address => uint) storage tokenAmounts) external returns (uint channelID, uint32 nonce) {
         require (MsgType(uint8(message[0])) == MsgType.ADDFUNDSTOCHANNEL, "p");
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
-        address partnerAddress = checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        address signerAddress;
+        assembly { signerAddress := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: signerAddr sits at finish at 69, and 69 - 32 = 37
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, signerAddress); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
         channelID = uint(keccak256(message[1: START_ADDRS + (uint(uint8(message[NUM_TOKEN])) * 20)]));  
         Channel storage channel = channels[channelID];
         require(channel.exists, "u");
@@ -681,27 +692,28 @@ library StormLib {
         assembly { nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) } //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 for the nonce
         require(nonce > channel.nonce, "x"); //TO DO: probably not necessary? Could only fail if partners not following protocol.
         
-        channel.balanceTotalsHash = addFundsHelper(message, partnerAddress, numTokens, tokenAmounts);
-        
+        channel.balanceTotalsHash = addFundsHelper(message, numTokens, tokenAmounts);
         //set nonce
         channel.nonce = nonce;
     }
 
     //helper that distributes the funds, used by settle and settlesubset
-    function distributeSettleTokens(bytes calldata message, uint numTokens, address partnerAddress, mapping(address => uint) storage tokenAmounts, bool finalNotSubset) private returns (uint160) {
+    function distributeSettleTokens(bytes calldata message, uint numTokens, mapping(address => uint) storage tokenAmounts, bool finalNotSubset) private returns (uint160) {
         uint _ownerBalance;
         uint _partnerBalance;
         address tokenAddress;
+        address partnerAddress;
+        assembly { partnerAddress := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: -3 bc ends at 29, 29 - 32 = -3
         
         uint[] memory balanceTotalsNew = new uint[]((finalNotSubset ? 0 : numTokens)); //TO DO: make sure this costs no gas if in settle case
         for (uint8 i = 0; i < numTokens; i++) {
             uint balanceTotal;
-            assembly { balanceTotal := calldataload(add(add(add(message.offset, 50), mul(numTokens, 84)), mul(i, 32))) } //MAGICNUMBERNOTE: starts at end of balances (hence numTokens* 84)
+            assembly { balanceTotal := calldataload(add(add(add(message.offset, 70), mul(numTokens, 84)), mul(i, 32))) } //MAGICNUMBERNOTE:70 for start_addrs. starts at end of balances (hence numTokens* 84)
             if (balanceTotal != 0 && (finalNotSubset || (uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + i]) == 1))) {
                 //should settle this token. Either bc nonempty and settle, or nonempty and subsetSettle with flag set
                 assembly {
-                    let startBalOwner := add(add(add(message.offset, 50), mul(numTokens, 20)), mul(i, 64)) //MAGICNUMBERNOTE: 50 bc start addrs
-                    tokenAddress := calldataload(add(add(message.offset, 38), mul(i, 20))) //MAGICNUMBERNOTE: bc START_ADDRS is at 50, so first addr ends at 70, 70 - 32 = 38
+                    let startBalOwner := add(add(add(message.offset, 70), mul(numTokens, 20)), mul(i, 64)) //MAGICNUMBERNOTE: 70 bc start addrs
+                    tokenAddress := calldataload(add(add(message.offset, 58), mul(i, 20))) //MAGICNUMBERNOTE: bc START_ADDRS is at 70, so first addr ends at 90, 90 - 32 = 58
                     _ownerBalance := calldataload(startBalOwner)
                     _partnerBalance := calldataload(add(startBalOwner, 32))
                 }
@@ -737,12 +749,14 @@ library StormLib {
 
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        address partnerAddress = checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
-        require(msg.sender == partnerAddress || msg.sender == owner, "i"); // TO DO: necesssary? Prevents watchtower-called settled, but is this a flaw?
+        address signerAddress;
+        assembly { signerAddress := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: signerAddr sits at finish at 69, and 69 - 32 = 37
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, signerAddress); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        require(msg.sender == signerAddress || msg.sender == owner, "i"); // TO DO: necesssary? Prevents watchtower-called settled, but is this a flaw?
         require(channels[channelID].exists, "u");
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
         
-        distributeSettleTokens(message, numTokens, partnerAddress, tokenAmounts, true);
+        distributeSettleTokens(message, numTokens, tokenAmounts, true);
         
         //clean up
         delete channels[channelID];
@@ -754,8 +768,10 @@ library StormLib {
 
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        address partnerAddress = checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
-        require(msg.sender == partnerAddress || msg.sender == owner, "i"); // TO DO: necesssary? Prevents watchtower-called settled, but is this a flaw?
+        address signerAddress;
+        assembly { signerAddress := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: signerAddr sits at finish at 69, and 69 - 32 = 37
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, signerAddress); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        require(msg.sender == signerAddress || msg.sender == owner, "i"); // TO DO: necesssary? Prevents watchtower-called settled, but is this a flaw?
         require(channels[channelID].exists, "u"); 
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
         require(!channels[channelID].settlementInProgress, "w"); //Cant distribute if settling; don't know which direction to shove the shards.
@@ -763,7 +779,7 @@ library StormLib {
         assembly { nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) } //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 for the nonce
         require(nonce > channels[channelID].nonce, "x");
 
-        channels[channelID].balanceTotalsHash = distributeSettleTokens(message, numTokens, partnerAddress, tokenAmounts, false);
+        channels[channelID].balanceTotalsHash = distributeSettleTokens(message, numTokens, tokenAmounts, false);
         channels[channelID].nonce = nonce; //Enables the UnconditionalSubset msg to now be spent
     }
 
@@ -816,7 +832,7 @@ library StormLib {
         }
     }
 
-    function disputeStartedChecks(Channel storage channel, bytes calldata message, uint numTokens, address owner, address partnerAddress) private returns (uint32 nonce, MsgType msgType) {
+    function disputeStartedChecks(Channel storage channel, bytes calldata message, uint numTokens, address owner, address signerAddress) private returns (uint32 nonce, MsgType msgType) {
         msgType = MsgType(uint8(message[0]));
         if (msgType != MsgType.INITIAL) {
             //if is initial, we dont touch nonce, and leave it initialized to 0. Remember, INITIALS end in a deadline, not a nonce, since nonce is implicitly 0
@@ -832,7 +848,7 @@ library StormLib {
         require(msgType == MsgType.INITIAL || msgType == MsgType.UNCONDITIONAL || msgType == MsgType.SHARDED, "p");
 
         if (!channel.settlementInProgress) {
-            require(msg.sender == partnerAddress || msg.sender == owner, "i");//Done so that watchtowers cant startDisputes. They can only trump already started settlements.
+            require(msg.sender == signerAddress || msg.sender == owner, "i");//Done so that watchtowers cant startDisputes. They can only trump already started settlements.
             require(nonce >= channel.nonce, "x"); //>= includes equals for case where starting settlement with a message that was used in a update() call already. Note shards cannot be used in update(), so shards will always be >. Didn't include this separately since checking >= is the same as checking >, for if not settling no way sharded nonce could have already been seen
             uint8 disputeBlockTimeoutHours;
             assembly{ disputeBlockTimeoutHours := calldataload(sub(message.offset, 30)) } //MAGICNUMBERNOTE: 30 bc disputeBlockTimeout sits at position 01, so -30 + 32 = 2, will have last byte as pos. 1, as desired!
@@ -857,12 +873,14 @@ library StormLib {
     function startDispute(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external returns(uint channelID, uint32 nonce, MsgType msgType) {
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        address partnerAddress = checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        address signerAddress;
+        assembly { signerAddress := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: signerAddr sits at finish at 69, and 69 - 32 = 37
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, signerAddress); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.        
         Channel storage channel = channels[channelID]; 
         require(channel.exists, "u");
         require(channel.balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
 
-        (nonce, msgType) = disputeStartedChecks(channel, message, numTokens, owner, partnerAddress);
+        (nonce, msgType) = disputeStartedChecks(channel, message, numTokens, owner, signerAddress);
         //properly set the shards, while also checking for overflows of channel balances
         updateShards(channel, message, msgType, numTokens);
         
@@ -946,15 +964,7 @@ library StormLib {
 
 
     
-//uint8 tokenIndex.  
-        //Index of the token being traded on. 
-    //uint8 ownerGivingOrReceiving: 0: no one. 1: ownerGiving. 2: ownerReceiving
-        //says whether owner is giving token to partner, or whether owner receiving it from partner
-    //uint amount 
-        // amount being traded on
-    //uint8 shardBlockTimeoutHours
-        //again, as other timeout, represents hours. 
-    //uint hashlock
+
 
     function addShardsInWithdraw(bytes calldata message, BalancePair[] memory shardTokenBals, uint numTokens, uint8 numShards) pure private {
         //we will go through and add all the shard information to shardTokenBals.
@@ -972,6 +982,8 @@ library StormLib {
                 shardTokenBals[i].partnerBalance += amount;
             }
             shardPointer += LEN_SHARD;
+
+            //OLD multitoken per shard code
             // uint8 lenAmounts = 32 * uint8(message[shardPointer + numTokens]); //32 * numAmounts
             // uint8 ownerControlsHashlock = uint8(message[shardPointer + numTokens + 1 + lenAmounts]);//jump over oGOR, numAmounts, amounts[]
             // uint seen = 0;
@@ -1010,7 +1022,7 @@ library StormLib {
         
         uint startBals = START_ADDRS + (numTokens * 20);
         BalancePair[] memory shardTokenBals = new BalancePair[](numTokens); //this stores owner, partner split for each token.
-        assembly { calldatacopy(add(shardTokenBals, 32), add(message.offset, startBals), mul(numTokens, 64)) }         //lets initialize it with the non sharded information stored in message balances right after tokens
+        assembly { calldatacopy(add(shardTokenBals, 32), add(message.offset, startBals), mul(numTokens, 64)) }  //lets initialize it with the non sharded information stored in message balances right after tokens
 
         if (numShards > 0) {
             addShardsInWithdraw(message, shardTokenBals, numTokens, numShards);
