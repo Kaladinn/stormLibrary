@@ -92,11 +92,11 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         and would not be recognized as a repeat.
 //     uint24 chainID 
 //         (use to differentiate between two blockchains that may have naming overlap, so that is anchored into intended chain). I anticipate 2^24 is a high enough value to capture any chain we may need.
-//     address partnerAddress
+//     address partnerAddr
 //         the address of the person providing funds. This is where funds are received from, and sent to. This sig is only checked in anchor and singleswapStake
 //     address contractAddress
-//     address signerAddress
-//         the address that the partner person uses to sign messages. This may be the same as partnerAddress.
+//     address pSignerAddr
+//         the address that the partner person uses to sign messages. This may be the same as partnerAddr.
 //     byte numTokens
 //         represents number of 20 byte ERC20 addrs below that are in contract. Note this is limited to 255 by nature of being a byte. 
 //     address[] tokens:
@@ -252,7 +252,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         byte msgType
 //         5 bytes zeros (padding) //done so that complies with anchor format, doAnchorChecks can be reused on this
 //         uint24 chainID
-//         address partnerAddress
+//         address partnerAddr
 //         address contractAddress
 //         address ownerToken
 //         address partnerToken
@@ -265,7 +265,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         bool owner/partnerFlag. 00 if owner is providing the funds, 01 if partner providing
 //         uint8 blockHourTimeout
 //         uint24 chainID
-//         address partnerAddress
+//         address partnerAddr
 //         address contractAddress
 //         address personToken
 //         uint personAmount
@@ -373,7 +373,7 @@ library StormLib {
      * checks that given a message and two pairs of signatures, the signatures are valid for the keccak of the message,
      * given that ownerSignature matches owner of the contract, and partnerSignature matches partnerAaddress that is embedded in message as part of pairID.
      * Signatures are ECDSA sigs in the form v || r || s. Also, signatures in form ownerSignature | partnerSignature.
-     * Is anchor states whether we should use partnerAddr(anchoring), or signerAddr(everything else)
+     * Is anchor states whether we should use partnerAddr(anchoring), or pSignerAddr(everything else)
      */
     function checkSignatures(bytes calldata message, bytes calldata signatures, address owner, address nonOwnerAddr) private pure {
         bytes32 messageHash = keccak256(message);
@@ -395,7 +395,7 @@ library StormLib {
 
 
     //checks that there is sufficient liquidity to add tokens, and then do so. 
-    function lockTokens(bytes calldata tokens, uint numTokens, address partnerAddress, mapping(address => uint) storage tokenAmounts) private returns ( uint160 ) {
+    function lockTokens(bytes calldata tokens, uint numTokens, address partnerAddr, mapping(address => uint) storage tokenAmounts) private returns ( uint160 ) {
         uint _ownerBalance;
         uint _partnerBalance;
         address tokenAddress;
@@ -414,7 +414,7 @@ library StormLib {
                 require(msg.value == _partnerBalance, "k");
             } else {
                 IERC20 token = IERC20(tokenAddress);
-                bool success = token.transferFrom(partnerAddress, address(this), _partnerBalance);
+                bool success = token.transferFrom(partnerAddr, address(this), _partnerBalance);
                 require(success, "j");
             }
             tokenAmounts[tokenAddress] -= _ownerBalance; //solidity 0.8.x should catch overflow here. 
@@ -438,7 +438,7 @@ library StormLib {
     }
 
     //Goes through, and transfer into the contract the necessary funds
-    function processFundsSingleswap(bytes calldata message, uint8 person, bool singleChain, address partnerAddress, mapping(address => uint) storage tokenAmounts) private {
+    function processFundsSingleswap(bytes calldata message, uint8 person, bool singleChain, address partnerAddr, mapping(address => uint) storage tokenAmounts) private {
         //process funds
         uint ownerAmount;
         uint partnerAmount;
@@ -454,9 +454,9 @@ library StormLib {
                 //distribute funds instantly
                 if (addr == NATIVE_TOKEN) {
                     //is native token
-                    payable(partnerAddress).transfer(ownerAmount);
+                    payable(partnerAddr).transfer(ownerAmount);
                 } else {
-                    bool success = IERC20(addr).transfer(partnerAddress, ownerAmount);
+                    bool success = IERC20(addr).transfer(partnerAddr, ownerAmount);
                     require(success, "j");
                 }
             }
@@ -473,7 +473,7 @@ library StormLib {
             if (addr == NATIVE_TOKEN) {
                 require(msg.value == partnerAmount, "k");
             } else {
-                bool success = IERC20(addr).transferFrom(partnerAddress, address(this), partnerAmount);
+                bool success = IERC20(addr).transferFrom(partnerAddr, address(this), partnerAmount);
                 require(success, "j");
             }
         }
@@ -484,9 +484,9 @@ library StormLib {
         //Secondly, we need that the timeout is always longer than the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed.
     function singleswapStake(bytes calldata message, bytes calldata signatures, uint entryToDelete, address owner, mapping(address => uint) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID) {
         uint deadline = doAnchorChecks(message);
-        address partnerAddress;
-        assembly { partnerAddress := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: sits at finish at 29, and 29 - 32 = -3
-        checkSignatures(message, signatures, owner, partnerAddress);
+        address partnerAddr;
+        assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: sits at finish at 29, and 29 - 32 = -3
+        checkSignatures(message, signatures, owner, partnerAddr);
         swapID = uint(keccak256(message));
         require(seenSwaps[swapID].timeout == 0, "C");
 
@@ -500,7 +500,7 @@ library StormLib {
             person = uint8(message[4]);
             timeoutHours = uint8(message[5]);
         }
-        processFundsSingleswap(message, person, singleChain, partnerAddress, tokenAmounts);
+        processFundsSingleswap(message, person, singleChain, partnerAddr, tokenAmounts);
         if (singleChain) {
             seenSwaps[swapID].timeout = deadline;
         } else {
@@ -525,11 +525,11 @@ library StormLib {
         
         uint8 person = uint8(message[4]);
         //process funds
-        address partnerAddress;
+        address partnerAddr;
         uint amount;
         address addr;
         assembly { 
-            partnerAddress := calldataload(sub(message.offset, 3))
+            partnerAddr := calldataload(sub(message.offset, 3))
             addr := calldataload(add(message.offset, 37))//MAGICNUMBERNOTE: fetching personToken, which sits at 37 + 32 = 69
             amount := calldataload(add(message.offset, 89))//MAGICNUMBERNOTE: fetching personToken, which starts at 89, uint
         }
@@ -546,9 +546,9 @@ library StormLib {
         if (person == 0) {
             //is owner, so owner paid, means partner should receive. OR, got flipped up above, so is owner, but partner paid, which means partner gets return
             if (addr == NATIVE_TOKEN) {
-                payable(partnerAddress).transfer(amount);
+                payable(partnerAddr).transfer(amount);
             } else {
-                bool success = IERC20(addr).transfer(partnerAddress, amount);
+                bool success = IERC20(addr).transfer(partnerAddr, amount);
                 require(success, "j");
             }
         } else {
@@ -575,9 +575,9 @@ library StormLib {
      */
     function anchor(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels, mapping(address => uint) storage tokenAmounts) external returns (uint) {
         doAnchorChecks(message);
-        address partnerAddress;
-        assembly { partnerAddress := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: partnerAddress sits at finish at 29, and 29 - 32 = -3
-        checkSignatures(message, signatures, owner, partnerAddress);
+        address partnerAddr;
+        assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: partnerAddr sits at finish at 29, and 29 - 32 = -3
+        checkSignatures(message, signatures, owner, partnerAddr);
         require(MsgType(uint8(message[0])) == MsgType.INITIAL, "p");
     
         uint numTokens = uint(uint8(message[NUM_TOKEN])); //otherwise, when multiplying, will overflow
@@ -585,7 +585,7 @@ library StormLib {
         uint channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
         require(!channels[channelID].exists, "s");
         
-        uint160 balanceTotalsHash = lockTokens(message[START_ADDRS : START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)], numTokens, partnerAddress, tokenAmounts);
+        uint160 balanceTotalsHash = lockTokens(message[START_ADDRS : START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)], numTokens, partnerAddr, tokenAmounts);
         Channel storage channel = channels[channelID];
         channel.exists = true;
         channel.balanceTotalsHash = balanceTotalsHash;
@@ -606,9 +606,9 @@ library StormLib {
     function update(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external {        
         require (MsgType(uint8(message[0])) == MsgType.UNCONDITIONAL, "p");
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
-        address signerAddress;
-        assembly { signerAddress := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: signerAddr sits at finish at 69, and 69 - 32 = 37
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, signerAddress); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        address pSignerAddr;
+        assembly { pSignerAddr := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: pSignerAddr sits at finish at 69, and 69 - 32 = 37
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
         uint channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
         Channel storage channel = channels[channelID];
         require(channel.exists, "u");
@@ -641,8 +641,8 @@ library StormLib {
         uint amountToAddOwner;
         uint amountToAddPartner;
         uint prevBalanceTotal;
-        address partnerAddress; //is calced here not in addFundsToChannel, bc msg sig was based off of signerAddr, whihc may not actually have possession of funds
-        assembly { partnerAddress := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: -3 bc ends at 29, 29 - 32 = -3
+        address partnerAddr; //is calced here not in addFundsToChannel, bc msg sig was based off of pSignerAddr, whihc may not actually have possession of funds
+        assembly { partnerAddr := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: -3 bc ends at 29, 29 - 32 = -3
 
         uint[] memory balanceTotalsNew = new uint[](numTokens);
         for (uint8 i = 0; i < numTokens; i++) {
@@ -664,7 +664,7 @@ library StormLib {
                 require(msg.value == amountToAddPartner, "k"); 
             } else if (amountToAddPartner != 0) {
                 IERC20 token = IERC20(tokenAddress);
-                bool success = token.transferFrom(partnerAddress, address(this), amountToAddPartner);
+                bool success = token.transferFrom(partnerAddr, address(this), amountToAddPartner);
                 require(success, "j");
             }
             balanceTotalsNew[i] = prevBalanceTotal + amountToAddOwner + amountToAddPartner;
@@ -680,9 +680,9 @@ library StormLib {
     function addFundsToChannel(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels, mapping(address => uint) storage tokenAmounts) external returns (uint channelID, uint32 nonce) {
         require (MsgType(uint8(message[0])) == MsgType.ADDFUNDSTOCHANNEL, "p");
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
-        address signerAddress;
-        assembly { signerAddress := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: signerAddr sits at finish at 69, and 69 - 32 = 37
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, signerAddress); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        address pSignerAddr;
+        assembly { pSignerAddr := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: pSignerAddr sits at finish at 69, and 69 - 32 = 37
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
         channelID = uint(keccak256(message[1: START_ADDRS + (uint(uint8(message[NUM_TOKEN])) * 20)]));  
         Channel storage channel = channels[channelID];
         require(channel.exists, "u");
@@ -702,8 +702,8 @@ library StormLib {
         uint _ownerBalance;
         uint _partnerBalance;
         address tokenAddress;
-        address partnerAddress;
-        assembly { partnerAddress := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: -3 bc ends at 29, 29 - 32 = -3
+        address partnerAddr;
+        assembly { partnerAddr := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: -3 bc ends at 29, 29 - 32 = -3
         
         uint[] memory balanceTotalsNew = new uint[]((finalNotSubset ? 0 : numTokens)); //TO DO: make sure this costs no gas if in settle case
         for (uint8 i = 0; i < numTokens; i++) {
@@ -719,10 +719,10 @@ library StormLib {
                 }
                 require(balanceTotal >= _ownerBalance + _partnerBalance, "l"); //TO DO: should this be strict equality??
                 if (i == 0 && tokenAddress == NATIVE_TOKEN) {
-                    payable(partnerAddress).transfer(_partnerBalance);
+                    payable(partnerAddr).transfer(_partnerBalance);
                 } else {
                     IERC20 token = IERC20(tokenAddress);
-                    token.transfer(partnerAddress, _partnerBalance);
+                    token.transfer(partnerAddr, _partnerBalance);
                 }
                 tokenAmounts[tokenAddress] += _ownerBalance;
                 if (!finalNotSubset) {
@@ -749,10 +749,10 @@ library StormLib {
 
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        address signerAddress;
-        assembly { signerAddress := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: signerAddr sits at finish at 69, and 69 - 32 = 37
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, signerAddress); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
-        require(msg.sender == signerAddress || msg.sender == owner, "i"); // TO DO: necesssary? Prevents watchtower-called settled, but is this a flaw?
+        address pSignerAddr;
+        assembly { pSignerAddr := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: pSignerAddr sits at finish at 69, and 69 - 32 = 37
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        require(msg.sender == pSignerAddr || msg.sender == owner, "i"); // TO DO: necesssary? Prevents watchtower-called settled, but is this a flaw?
         require(channels[channelID].exists, "u");
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
         
@@ -768,10 +768,10 @@ library StormLib {
 
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        address signerAddress;
-        assembly { signerAddress := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: signerAddr sits at finish at 69, and 69 - 32 = 37
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, signerAddress); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
-        require(msg.sender == signerAddress || msg.sender == owner, "i"); // TO DO: necesssary? Prevents watchtower-called settled, but is this a flaw?
+        address pSignerAddr;
+        assembly { pSignerAddr := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: pSignerAddr sits at finish at 69, and 69 - 32 = 37
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        require(msg.sender == pSignerAddr || msg.sender == owner, "i"); // TO DO: necesssary? Prevents watchtower-called settled, but is this a flaw?
         require(channels[channelID].exists, "u"); 
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
         require(!channels[channelID].settlementInProgress, "w"); //Cant distribute if settling; don't know which direction to shove the shards.
@@ -832,7 +832,7 @@ library StormLib {
         }
     }
 
-    function disputeStartedChecks(Channel storage channel, bytes calldata message, uint numTokens, address owner, address signerAddress) private returns (uint32 nonce, MsgType msgType) {
+    function disputeStartedChecks(Channel storage channel, bytes calldata message, uint numTokens, address owner, address pSignerAddr) private returns (uint32 nonce, MsgType msgType) {
         msgType = MsgType(uint8(message[0]));
         if (msgType != MsgType.INITIAL) {
             //if is initial, we dont touch nonce, and leave it initialized to 0. Remember, INITIALS end in a deadline, not a nonce, since nonce is implicitly 0
@@ -848,7 +848,7 @@ library StormLib {
         require(msgType == MsgType.INITIAL || msgType == MsgType.UNCONDITIONAL || msgType == MsgType.SHARDED, "p");
 
         if (!channel.settlementInProgress) {
-            require(msg.sender == signerAddress || msg.sender == owner, "i");//Done so that watchtowers cant startDisputes. They can only trump already started settlements.
+            require(msg.sender == pSignerAddr || msg.sender == owner, "i");//Done so that watchtowers cant startDisputes. They can only trump already started settlements.
             require(nonce >= channel.nonce, "x"); //>= includes equals for case where starting settlement with a message that was used in a update() call already. Note shards cannot be used in update(), so shards will always be >. Didn't include this separately since checking >= is the same as checking >, for if not settling no way sharded nonce could have already been seen
             uint8 disputeBlockTimeoutHours;
             assembly{ disputeBlockTimeoutHours := calldataload(sub(message.offset, 30)) } //MAGICNUMBERNOTE: 30 bc disputeBlockTimeout sits at position 01, so -30 + 32 = 2, will have last byte as pos. 1, as desired!
@@ -873,14 +873,14 @@ library StormLib {
     function startDispute(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external returns(uint channelID, uint32 nonce, MsgType msgType) {
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        address signerAddress;
-        assembly { signerAddress := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: signerAddr sits at finish at 69, and 69 - 32 = 37
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, signerAddress); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.        
+        address pSignerAddr;
+        assembly { pSignerAddr := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: pSignerAddr sits at finish at 69, and 69 - 32 = 37
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.        
         Channel storage channel = channels[channelID]; 
         require(channel.exists, "u");
         require(channel.balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
 
-        (nonce, msgType) = disputeStartedChecks(channel, message, numTokens, owner, signerAddress);
+        (nonce, msgType) = disputeStartedChecks(channel, message, numTokens, owner, pSignerAddr);
         //properly set the shards, while also checking for overflows of channel balances
         updateShards(channel, message, msgType, numTokens);
         
@@ -913,8 +913,8 @@ library StormLib {
         for (uint i = 0; i < shardNos.length; i++) {
             uint shardPointer = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * 84) + 1 + (shardNos[i] * LEN_SHARD) + 34])); //point this to proper shards tokenIndex, jumpin over tokenBalances, numShards, prior shards, and then tokenIndex, oGoR, amount
             require(block.number <= shardBlockTimeout + uint(uint8(message[shardPointer])) * BLOCKS_PER_HOUR, "e"); //add blockAtDispute + shardblockTimeoutHours * BLOCKS_PER_HOUr
-            address partnerAddress;
-            assembly { partnerAddress := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: so that reads up to -3 + 32 = 29, which is where partnerAddress ends in message
+            address partnerAddr;
+            assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: so that reads up to -3 + 32 = 29, which is where partnerAddr ends in message
         
             // shardMessageIndex = message.length - 32 - (numTokens - shardNos[i]);
             // ShardState shardState = ShardState(uint8(message[shardMessageIndex]));//extract out shard state stored. is the index at which the shard is storing shardState in shardDataMsg
@@ -1030,18 +1030,18 @@ library StormLib {
 
         //now, we have added all the shardedFunds into the shardTokenBals. Now, we need to go into unsharded token balances, and add in each owner, partner amount
     
-        address partnerAddress;
-        assembly{ partnerAddress := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: so that reads up to -3 + 32 = 29, which is where partnerAddress ends in message
+        address partnerAddr;
+        assembly{ partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: so that reads up to -3 + 32 = 29, which is where partnerAddr ends in message
         
         address tokenAddress;
         for (uint8 i = 0; i < numTokens; i++) {
             assembly { tokenAddress := calldataload(add(message.offset, add(38, mul(i, 20)))) } //MAGICNUMBERNOTE: bc START_ADDRS is at 50, so first addr ends at 70 - 32 = 38
             //TO DO: could do another check here that no channel overflow, but feels unnecessary bc already been checked, and currently aren't even passing the balanceTotals array.
             if (i == 0 && tokenAddress == NATIVE_TOKEN) {
-                payable(partnerAddress).transfer(shardTokenBals[i].partnerBalance);   
+                payable(partnerAddr).transfer(shardTokenBals[i].partnerBalance);   
             } else {
                 IERC20 token = IERC20(tokenAddress);
-                token.transfer(partnerAddress, shardTokenBals[i].partnerBalance);
+                token.transfer(partnerAddr, shardTokenBals[i].partnerBalance);
             }
             tokenAmounts[tokenAddress] += shardTokenBals[i].ownerBalance;
         }
