@@ -739,6 +739,7 @@ library StormLib {
     }
 
     //TO DO: if any cheaper, combine this and settleSubset into one function. Need to test if it inc/dec funds for publishing contract and also flows.
+    //TO DO: I have eliminated checks that msg.sender == partnerAddr, ownerAddr. This allows watchtower called settle. Are we okay with this? Seems safe to me.
     /**
      * Requires a settle message. When two parties agree they want to settle out to chain, they can sign a settle message. This is 
      * the expected exit strategy for a channel. Because its agreed upon as the last message, it is safe to immediately distribute funds
@@ -752,7 +753,7 @@ library StormLib {
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: pSignerAddr sits at finish at 69, and 69 - 32 = 37
         checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
-        require(msg.sender == pSignerAddr || msg.sender == owner, "i"); // TO DO: necesssary? Prevents watchtower-called settled, but is this a flaw?
+        
         require(channels[channelID].exists, "u");
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
         
@@ -771,7 +772,6 @@ library StormLib {
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: pSignerAddr sits at finish at 69, and 69 - 32 = 37
         checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
-        require(msg.sender == pSignerAddr || msg.sender == owner, "i"); // TO DO: necesssary? Prevents watchtower-called settled, but is this a flaw?
         require(channels[channelID].exists, "u"); 
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
         require(!channels[channelID].settlementInProgress, "w"); //Cant distribute if settling; don't know which direction to shove the shards.
@@ -834,18 +834,21 @@ library StormLib {
 
     function disputeStartedChecks(Channel storage channel, bytes calldata message, bytes calldata signatures, uint numTokens, address owner) private returns (uint32 nonce, MsgType msgType) {
         msgType = MsgType(uint8(message[0]));
-        address pSignerAddr;
+        address partnerAddr;
         if (msgType != MsgType.INITIAL) {
             //if is initial, we dont touch nonce, and leave it initialized to 0. Remember, INITIALS end in a deadline, not a nonce, since nonce is implicitly 0
             assembly { 
                 nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 bytes so 4 bytes for the nonce at end
-                pSignerAddr := calldataload(add(message.offset, 37)) //MAGICNUMBERNOTE: bc end of pSignerAddr sits at 69, 69 - 32 = 37
-            } 
+                partnerAddr := calldataload(add(message.offset, 37)) //MAGICNUMBERNOTE: bc end of pSignerAddr sits at 69, 69 - 32 = 37. Using partnerAddr name to save call stack space
+            }
+            checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, partnerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.  
+            assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: getting partnerAddr set correctly for check below, where we require msg.sender == partnerAddr
+ 
         } else {
             //is initial, so we want to check sig off of the partnerAddr, not pSignerAddr
-            assembly { pSignerAddr := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: bc end of partnerAddr sits at 29, 29 - 32 = -3
+            assembly { partnerAddr := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: bc end of partnerAddr sits at 29, 29 - 32 = -3
+            checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, partnerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.   
         }
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.   
 
 
          //if after a subset settle, ensure that subset settle has been published
@@ -857,7 +860,7 @@ library StormLib {
         require(msgType == MsgType.INITIAL || msgType == MsgType.UNCONDITIONAL || msgType == MsgType.SHARDED, "p");
 
         if (!channel.settlementInProgress) {
-            require(msg.sender == pSignerAddr || msg.sender == owner, "i");//Done so that watchtowers cant startDisputes. They can only trump already started settlements.
+            require(msg.sender == partnerAddr || msg.sender == owner, "i");//Done so that watchtowers cant startDisputes. They can only trump already started settlements.
             require(nonce >= channel.nonce, "x"); //>= includes equals for case where starting settlement with a message that was used in a update() call already. Note shards cannot be used in update(), so shards will always be >. Didn't include this separately since checking >= is the same as checking >, for if not settling no way sharded nonce could have already been seen
             uint8 disputeBlockTimeoutHours;
             assembly{ disputeBlockTimeoutHours := calldataload(sub(message.offset, 30)) } //MAGICNUMBERNOTE: 30 bc disputeBlockTimeout sits at position 01, so -30 + 32 = 2, will have last byte as pos. 1, as desired!
