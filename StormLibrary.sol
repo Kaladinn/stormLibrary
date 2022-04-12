@@ -832,12 +832,21 @@ library StormLib {
         }
     }
 
-    function disputeStartedChecks(Channel storage channel, bytes calldata message, uint numTokens, address owner, address pSignerAddr) private returns (uint32 nonce, MsgType msgType) {
+    function disputeStartedChecks(Channel storage channel, bytes calldata message, bytes calldata signatures, uint numTokens, address owner) private returns (uint32 nonce, MsgType msgType) {
         msgType = MsgType(uint8(message[0]));
+        address pSignerAddr;
         if (msgType != MsgType.INITIAL) {
             //if is initial, we dont touch nonce, and leave it initialized to 0. Remember, INITIALS end in a deadline, not a nonce, since nonce is implicitly 0
-            assembly { nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) } //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 bytes so 4 bytes for the nonce at end
+            assembly { 
+                nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 bytes so 4 bytes for the nonce at end
+                pSignerAddr := calldataload(add(message.offset, 37)) //MAGICNUMBERNOTE: bc end of pSignerAddr sits at 69, 69 - 32 = 37
+            } 
+        } else {
+            //is initial, so we want to check sig off of the partnerAddr, not pSignerAddr
+            assembly { pSignerAddr := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: bc end of partnerAddr sits at 29, 29 - 32 = -3
         }
+        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.   
+
 
          //if after a subset settle, ensure that subset settle has been published
         if (msgType == MsgType.UNCONDITIONALSUBSET) {
@@ -872,15 +881,12 @@ library StormLib {
      //Receives a {INITIAL, UNCONDITIONAL, SHARDED, UNCONDITIONALSUBSET} || balanceTotalsMsg. Stores in msgHash = {msgType with deadline(INITIAL), nonce(else) stripped out} || shardDataMsg
     function startDispute(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external returns(uint channelID, uint32 nonce, MsgType msgType) {
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
-        channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        address pSignerAddr;
-        assembly { pSignerAddr := calldataload(add(message.offset, 37)) } //MAGICNUMBERNOTE: pSignerAddr sits at finish at 69, and 69 - 32 = 37
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.        
+        channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));     
         Channel storage channel = channels[channelID]; 
         require(channel.exists, "u");
         require(channel.balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
-
-        (nonce, msgType) = disputeStartedChecks(channel, message, numTokens, owner, pSignerAddr);
+        (nonce, msgType) = disputeStartedChecks(channel, message, signatures, numTokens, owner); //for simiplicity of checks concerning the partners signing addr, we call checkSignatures in here
+        
         //properly set the shards, while also checking for overflows of channel balances
         updateShards(channel, message, msgType, numTokens);
         
