@@ -11,7 +11,7 @@
  * You also need to make sure that the .deps file is pointing to the correct github thing. Remix will save your deps, and if you update the github, wont repull, so you
  * have to go in, delete the .deps, then recompile. https://remix-ide.readthedocs.io/en/latest/import.html
 
- * Finally, you need to go through and take every instance of __$......$__ and replace it with the exact address in the bytecode.
+ * Finally, you need to go through and take every instance of __$......$__ and replace it with the exact address (NO 0x prepended) in the bytecode.
 */
 
 pragma solidity ^0.8.7;
