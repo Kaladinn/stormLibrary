@@ -1091,7 +1091,8 @@ library StormLib {
 // u: channel does not exist
 // v: no such shard
 // w: cant process request because there is a settlementInProgress
-// x: update nonce is not high enough (either equal or old msg passed)
+// x: update nonce is not high enough (either equal or old msg passed). This is also important, bc if say, due to concurrency, two different msgs with same nonce are passed in a Kaladin route,
+    // we dont want the one that is going to finalized to be flip flopping back and forth with every startDispute call until disputeBlockTimeout expires.
 // y: can't have two of same token
 // z: can't sell and buy same token
 // A: preimage does not hash to hashlock (either fwd/revert, depending on pushForward bool)
