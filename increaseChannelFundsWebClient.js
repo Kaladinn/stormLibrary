@@ -7,32 +7,8 @@ const Storm = new web3.eth.Contract(StormABI, contractAddress)
     //Storm = new web3.eth.Contract(StormABI[channel['chain']], channel['contract']) if want to set dynamically w/in fn.
 // from StormMeta import StormChannelFunctionTypes, nativeToken
 
+import { checkSignature, signMessage } from './sharedJSFunctions.js'
 
-
-//msg, sig must contain a leading 0x
-function checkSignature(msg, sig, pubKey) {
-    const sigComps = fromRpcSig(sig)
-    const msgHash = keccakFromHexString(msg, 256)
-    const pubKeyComputed = bufferToHex(pubToAddress(ecrecover(msgHash, sigComps.v, sigComps.r, sigComps.s))) //TO DO: add 27 to v??
-    
-    if (pubKeyComputed !== pubKey) {
-        raise('Signature Verification Failed')
-    }
-}
-
-
-//msg must contain a leading 0x
-function signMessage(msg, pubKey, DBIndex) {
-    const privKey = ''//TODO: get privKey from give pubKey
-    const privKeyBuf = Buffer.from(privKey, "hex")
-    
-    let msgHash = keccakFromHexString(msg, 256)
-    let sig = ecsign(msgHash, privKeyBuf)
-    let sigV = '0' + (sig.v % 2 == 0 ? '1' : '0')//set to either 00, 01, from 27/28, 31/32
-    let sigString = sig.r.toString('hex') + sig.s.toString('hex') + sigV
-    console.log('sigstring', sigString)
-    return sigString 
-}
 
 
 // function updateChannelPartner(channel, ownerSig, DBIndex) {

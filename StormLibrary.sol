@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: UNLICENSED
 
-pragma solidity ^0.8.7;
+pragma solidity ^0.8.0;
 
 //IDEA: Kaladin Fees:
     //Constants: 
@@ -20,6 +20,11 @@ pragma solidity ^0.8.7;
         //For this, their amounts Kaladimes will be some function of the amount of ownerTotalSent, partnerTotalSent, where you receives more Kaladimes the more you send,
         //and contract owners are rewarded with significantly higher amounts.
 
+    //Fees are checked in settle, settleSubset, in withdraw (after a dispute).
+
+    //TODO: 
+        //Call out to UNISWAP, add redemption for Kaladin, redemption for owner, contract factory => approve Kaladimes at init.
+
     //Additions needed:
         //Kaladin can only withdraw if lockCount == 0. we need that if owner withdraws, Kaladin can withdraw(to prevent owner keeping a single inconsequential swap open, stopping Kaladin from ever collecting fees)
             //but Kaladin can only withdraw if lockCount == 0 and owner has already withdraw, since Kaladin skimming differences.
@@ -30,11 +35,16 @@ pragma solidity ^0.8.7;
         //Function Kaladin can hit (with a signature?) to get paid.
         //Way for owner to withdraw without self destruct AND self destruct not possible till Kaladin withdraw. Or, self destruct also pays out to Kaladin. 
 
-    //Trickinesses:
-        //When updating shards, we need to make sure that regardless of which direction the shard goes, it still wont be the case that the fees
-        //exceed the amount available in the channel.
+    //Special Notes:
+        //The fee, given by fees / FEE_DENOM, are always truncated to the nearest integer.
+        //If the fees are greater than the totals in the channel, then the amount for the channel is completely drained, even though this is less than the fees owed.
+            // It is up to nodes to make sure this doesnt happen before signing messages.
+        //If a shard reverts, the fees field isn't updated. However, if it succeeds: and ownerGiving, owner fees incremented; else, partner fees incremented.
+    //Tricky Bits:
         //When figuring out how to pay Kaladimes, how do we know the conversion rate between a random IERC20 and a Kaladime? A: call out to Uniswap contract to get the conversion rate?
+            //Are Kaladimes pegged to a value? Free floating? WOuld this value be a stablecoin or a fluctuating currency like ETHER?
         //How do we approve to the contract Kaladimes, so they can transferFrom and transfer and arbitrary amount.
+
 
 
     //Projected Fees for n tokens:
@@ -211,8 +221,8 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         byte msgType
 //         (variable) channelID 
 //         uint[] balances
-//             array of all the balances, given by ownerAmount, then partnerAmount. 
-//             For example, if there are two tokens in the channel, this will be 2 * (2 * 32) = 128 bytes long, arranged by ownerAmount0, partnerAmount0, ownerAmount1, partnerAmount1.
+//             array of all the balances, given by ownerAmount, then partnerAmount, then feesOwner, then feesPartner
+//             For example, if there are two tokens in the channel, this will be 2 * (4 * 32) = 256 bytes long, arranged by ownerAmount0, partnerAmount0, ownerAmount1, partnerAmount1.
 //             It is assumed balances in same order as tokens. Not side by side, bc balances change and channelID must be immutable. 
 //         uint deadline
 //             the block number by which this tx must be submitted. Used to scope validity of anchor signatures 
@@ -296,9 +306,11 @@ library StormLib {
         uint timeout;
     }
 
-    struct BalancePair {
-        uint ownerBalance;
-        uint partnerBalance;
+    struct BalanceStruct {
+        uint ownerBal;
+        uint partnerBal;
+        uint ownerFee;
+        uint partnerFee;
     }
 
 
@@ -319,11 +331,14 @@ library StormLib {
     //MAGIC NUMBERS
     uint8 constant NUM_TOKEN = 69;
     uint8 constant START_ADDRS = 70;
-    uint8 constant TOKEN_PLUS_BALS_UNIT = 84;
+    uint8 constant TOKEN_PLUS_BALS_UNIT = 148; //for 20 byte addr + 64 bytes bals + 64 bytes fees
     address constant NATIVE_TOKEN = address(0);
+    IERC20 constant KALADIMES_CONTRACT = IERC20(address(0)); //TODO: make this a real contract
+    address constant KALADIMES_ACCRUE_ADDR = address(1); //constant, essentially a mapping key, to store how much Kaladime the owner has earned in yield. Cheaper to store, then call out all at once to contract rather than call transferFrom for each settle
     uint constant LEN_SHARD = 67;
+    uint constant FEE_DENOM = 10000; //is the denominator for the fee. So, this translates to 1/ 10000, or 0.01%. If were say 5, this would be a 20% fee
+    uint constant FEE_DENOM_KAL = 10; //is the denom for the percentage of the fees that Kaladin takes
     
-
     //****************************** Debugging Methods *****************************/
 
     function getContractBalances(address[] calldata tokens,  mapping(address => uint) storage tokenAmounts) external view returns (bytes memory) {
@@ -405,8 +420,8 @@ library StormLib {
         for (uint i = 0; i < numTokens; i++) {
             assembly { 
                 tokenAddress := calldataload(add(sub(tokens.offset, 12), mul(i, 20))) //MAGICNUMBERNOTE: bc tokens starts at first tokenAddr, is 20 bytes, so we go back -12 so that -12+32 ends at 20
-                _ownerBalance := calldataload(add(tokens.offset, add(startBal, mul(i, 64))))
-                _partnerBalance := calldataload(add(tokens.offset, add(startBal, add(32, mul(i, 64)))))
+                _ownerBalance := calldataload(add(tokens.offset, add(startBal, mul(i, 128))))
+                _partnerBalance := calldataload(add(tokens.offset, add(startBal, add(32, mul(i, 128)))))
             }
             balances[i] = _ownerBalance + _partnerBalance;
             if (i == 0 && tokenAddress == NATIVE_TOKEN) {
@@ -555,7 +570,6 @@ library StormLib {
             //is partner, so partner paid, owner should receive. OR, got flipped up above, so is partner, but owner paid, owner gets return
             tokenAmounts[addr] += amount;
         }
-        
         if (timedOut) {
             //now safe to fully delete
             delete seenSwaps[swapID];
@@ -619,12 +633,12 @@ library StormLib {
         uint _ownerBalance;
         uint _partnerBalance;
         uint balanceTotal;
-        for (uint8 i = 0; i < numTokens; i++){
+        for (uint i = 0; i < numTokens; i++){
             assembly {
                 let startBals := add(add(message.offset, 70), mul(numTokens, 20)) //MAGICNUMBERNOTE: 70 for START_ADDRS
-                _ownerBalance := calldataload(add(startBals, mul(i, 64)))
-                _partnerBalance := calldataload(add(add(startBals, 32), mul(i, 64)))
-                balanceTotal := calldataload(add(add(startBals, mul(numTokens, 64)), mul(i, 32))) //MAGICNUMBERNOTE: starts at end of balances (hence numTokens* 64)
+                _ownerBalance := calldataload(add(startBals, mul(i, 128)))
+                _partnerBalance := calldataload(add(add(startBals, 32), mul(i, 128)))
+                balanceTotal := calldataload(add(add(startBals, mul(numTokens, 128)), mul(i, 32))) //MAGICNUMBERNOTE: starts at end of balances (hence numTokens* 128)
             }
             require(_ownerBalance + _partnerBalance <= balanceTotal, "l");  //TO DO: should that be a strict equality?
         }
@@ -645,13 +659,13 @@ library StormLib {
         assembly { partnerAddr := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: -3 bc ends at 29, 29 - 32 = -3
 
         uint[] memory balanceTotalsNew = new uint[](numTokens);
-        for (uint8 i = 0; i < numTokens; i++) {
+        for (uint i = 0; i < numTokens; i++) {
             assembly { 
-                let startBalOwner := add(add(add(message.offset, 70), mul(20, numTokens)), mul(i, 64)) //MAGICNUMBERNOTE: 70 bc is start of addrs, and we add 20 * numTokens to this to get start of balances
+                let startBalOwner := add(add(add(message.offset, 70), mul(20, numTokens)), mul(i, 128)) //MAGICNUMBERNOTE: 70 bc is start of addrs, and we add 20 * numTokens to this to get start of balances
                 tokenAddress := calldataload(add(add(message.offset, 58), mul(i, 20)))//MAGICNUMBERNOTE: 58 bc 70 is start of addrs, but is only 20 bytes, not 32, so we go to 70 -12 = 58
                 amountToAddOwner := calldataload(startBalOwner)
                 amountToAddPartner := calldataload(add(startBalOwner, 32))
-                prevBalanceTotal := calldataload(add(add(add(message.offset, 70), mul(numTokens, 84)), mul(i, 32))) //MAGICNUMBERNOTE: 70 for start_addrs. starts at end of balances (hence numTokens* 84)
+                prevBalanceTotal := calldataload(add(add(add(message.offset, 70), mul(numTokens, 148)), mul(i, 32))) //MAGICNUMBERNOTE: 70 for start_addrs. starts at end of balances (hence numTokens* 84)
             }
             //process any owner added funds
             if (amountToAddOwner != 0) {
@@ -697,44 +711,137 @@ library StormLib {
         channel.nonce = nonce;
     }
 
+    //here, it is assumed that fee1 > fee2, or person 1 losing net money, person 2 gaining net money, before consider Kaladime fees.
+    //First, we calculate the fees that each person owes Kaladin based on their fee1, fee2 number. Now, we look at how much they owe each other.
+    //Primary objective is to get Kaladin as much as they are due, then have partners pay each other, and also to make sure that fee1, fee2 represent how much was paid in fees to Kaladin, 
+    //which is the number that is used to calculate their number of Kaladimes. 
+    //1. Check whether person who is receiving net money can pay their Kaladime fees with their balance plus the net gain from their partner. 
+        //If they can't, we suck out all of their funds, and set their contribution equal to their bal + amount from their partner, and set that they are sending their partner nothing. 
+        //If they can, we just decrement their funds.
+    //2. Now, check whether person who is losing money can pay their Kaladime fees, with addition that their CP may not be giving them money, if they couldn't pay Kaladime fees.
+        //If they can't, we check how short they are.
+            //If they can't even pay fee w/ balance + what downstream paid them, then their contribution to downstream (CtD) is zero. If they can do that, but can't pay full contribution to downstream, 
+                //then CtD is the amount they pay downstream before running out of funds.
+            //Now, we check whether the downstream was actually able to their fees if they lost fee1To2 and only got CtD. If they still could, we just update their balance to reflect getting CtD, not the full fee1To2.
+            //If they can't, we set their balance to 0, to reflect paying the full fees. Then, the fees they actually paid are proportial to how much they originally had + how much they sent to 1 + CtD.
+        //If they can, we just decrement their balance proportional to paying those fees, and we exit.
+
+    //In the end, an individual can lose money based on whether their CPs fees end up being greater than the channel fees, but Kaladin will never give out more Kaladimes that they receive in fees (up to a constant of proportionality).
+
+    function feeLogic(uint bal1, uint bal2, uint fee1, uint fee2) private pure returns (uint, uint, uint, uint) {
+            //partner is gaining funds from fees, but may owe more than they can pay, to Kaladin
+            uint KaladinFee1 = fee1 / FEE_DENOM_KAL;
+            uint KaladinFee2 = fee2 / FEE_DENOM_KAL;
+            uint fee2To1 = fee2 - KaladinFee2;
+            uint fee1To2 = fee1 - KaladinFee1;
+            uint originalBal2 = bal2;
+            if (bal2 + (fee1To2 - fee2To1) < KaladinFee2) {
+                //bal2 is not able to pay the full Kaladin Fee. They can only pay a partial. So, we will ignore any money sent to them.
+                //so, we set their fees paid(for Kaladime purposes) to be their entire balance plus what is paid to them by the CP
+                fee2 = (bal2 + fee1To2) * FEE_DENOM_KAL;
+                bal2 = 0;
+                fee2To1 = 0;
+            } else {
+                bal2 = bal2 + (fee1To2 - fee2To1) - KaladinFee2;
+            }
+            if (bal1 < (fee1To2 - fee2To1) + KaladinFee1) {
+                uint fee1To2Actual = (bal1 + fee2To1) < KaladinFee1 ? 0 : KaladinFee1 - (bal1 + fee2To1);
+                fee1 = (bal1 + fee2To1) * FEE_DENOM_KAL;
+                bal1 = 0;
+                if (bal2 < (fee1To2 - fee1To2Actual)) {
+                    //means wont be able to afford the fees. Will have actually paid less. So, their funds go to zero, and their fees are now a function of their original balance + how much they were paid
+                    bal2 = 0;
+                    fee2 = (originalBal2 + fee2To1 + fee1To2Actual) * FEE_DENOM_KAL;
+                } else {
+                    bal2 -= (fee1To2 - fee1To2Actual);
+                }
+            } else {
+                bal1 -= ((fee1To2 - fee2To1) + KaladinFee1);
+            }
+            return (bal1, bal2, fee1 / FEE_DENOM_KAL, fee2 / FEE_DENOM_KAL);
+    }
+
+    //message starts at where the owner, partner balances will be.
+    function calcBalsAndFees(bytes calldata message, uint balanceTotal, uint i, address partnerAddr) private returns (uint ownerBal, address, uint) {
+        uint ownerFee;
+        uint partnerFee;
+        ownerBal;
+        uint partnerBal;
+        address tokenAddress;
+        uint numTokens = uint(uint8(message[NUM_TOKEN]));     
+
+        assembly {
+            let startOwnerBal := add(add(add(message.offset, 70), mul(numTokens, 20)), mul(i, 128)) //MAGICNUMBERNOTE: 70 bc start addrs
+            tokenAddress := calldataload(add(add(message.offset, 58), mul(i, 20))) //MAGICNUMBERNOTE: bc START_ADDRS is at 70, so first addr ends at 90, 90 - 32 = 58
+            ownerBal := calldataload(startOwnerBal) //
+            partnerBal := calldataload(add(startOwnerBal, 32))                    
+        }
+    
+        require(balanceTotal >= ownerBal + partnerBal, "l"); //TO DO: should this be strict equality??
+        if (ownerFee > partnerFee) {
+            (ownerBal, partnerBal, ownerFee, partnerFee) = feeLogic(ownerBal, partnerBal, ownerFee, partnerFee);
+        } else {
+            (partnerBal, ownerBal, partnerFee, ownerFee) = feeLogic(partnerBal, ownerBal, partnerFee, ownerFee);
+        }
+
+        uint conversionRate = 1; //TODO: call out to uniswap to get our actual conversion rate
+
+        if (i == 0 && tokenAddress == NATIVE_TOKEN && partnerBal != 0) {
+            payable(partnerAddr).transfer(partnerBal);
+        } else if (partnerBal != 0) {
+            IERC20(tokenAddress).transfer(partnerAddr, partnerBal);
+        }
+        KALADIMES_CONTRACT.transferFrom(address(this), partnerAddr, conversionRate * partnerFee); 
+        
+        return (ownerBal, tokenAddress, ownerFee * conversionRate);
+    }
+
+
+    function calcBalsAndFeesWithdraw(BalanceStruct memory shardTokenBal, address tokenAddress, address partnerAddr, uint i) private {
+        if (shardTokenBal.ownerFee > shardTokenBal.partnerFee) {
+            (shardTokenBal.ownerBal, shardTokenBal.partnerBal, shardTokenBal.ownerFee, shardTokenBal.partnerFee) = feeLogic(shardTokenBal.ownerBal, shardTokenBal.partnerBal, shardTokenBal.ownerFee, shardTokenBal.partnerFee);
+        } else {
+            (shardTokenBal.partnerBal, shardTokenBal.ownerBal, shardTokenBal.partnerFee, shardTokenBal.ownerFee) = feeLogic(shardTokenBal.partnerBal, shardTokenBal.ownerBal, shardTokenBal.partnerFee, shardTokenBal.ownerFee);
+        }
+        
+        uint conversionRate = 1; //TODO: call out to uniswap to get our actual conversion rate
+
+        if (i == 0 && tokenAddress == NATIVE_TOKEN && shardTokenBal.partnerBal != 0) {
+            payable(partnerAddr).transfer(shardTokenBal.partnerBal);
+        } else if (shardTokenBal.partnerBal != 0) {
+            IERC20(tokenAddress).transfer(partnerAddr, shardTokenBal.partnerBal);
+        }
+        KALADIMES_CONTRACT.transferFrom(address(this), partnerAddr, conversionRate * shardTokenBal.partnerFee); 
+
+        shardTokenBal.ownerFee = shardTokenBal.ownerFee * conversionRate;
+    }
+
     //helper that distributes the funds, used by settle and settlesubset
     function distributeSettleTokens(bytes calldata message, uint numTokens, mapping(address => uint) storage tokenAmounts, bool finalNotSubset) private returns (uint160) {
-        uint _ownerBalance;
-        uint _partnerBalance;
-        address tokenAddress;
         address partnerAddr;
         assembly { partnerAddr := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: -3 bc ends at 29, 29 - 32 = -3
-        
-        uint[] memory balanceTotalsNew = new uint[]((finalNotSubset ? 0 : numTokens)); //TO DO: make sure this costs no gas if in settle case
-        for (uint8 i = 0; i < numTokens; i++) {
+        uint totalKLD;
+        uint[] memory balanceTotalsNew = new uint[]((finalNotSubset ? 0 : numTokens)); //TO DO: make sure this costs no gas if in finalNotSubset case
+        for (uint i = 0; i < numTokens; i++) {
             uint balanceTotal;
-            assembly { balanceTotal := calldataload(add(add(add(message.offset, 70), mul(numTokens, 84)), mul(i, 32))) } //MAGICNUMBERNOTE:70 for start_addrs. starts at end of balances (hence numTokens* 84)
+            assembly { balanceTotal := calldataload(add(add(add(message.offset, 70), mul(numTokens, 148)), mul(i, 32))) } //MAGICNUMBERNOTE:70 for start_addrs. starts at end of balances (hence numTokens* 148)
             if (balanceTotal != 0 && (finalNotSubset || (uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + i]) == 1))) {
                 //should settle this token. Either bc nonempty and settle, or nonempty and subsetSettle with flag set
-                assembly {
-                    let startBalOwner := add(add(add(message.offset, 70), mul(numTokens, 20)), mul(i, 64)) //MAGICNUMBERNOTE: 70 bc start addrs
-                    tokenAddress := calldataload(add(add(message.offset, 58), mul(i, 20))) //MAGICNUMBERNOTE: bc START_ADDRS is at 70, so first addr ends at 90, 90 - 32 = 58
-                    _ownerBalance := calldataload(startBalOwner)
-                    _partnerBalance := calldataload(add(startBalOwner, 32))
-                }
-                require(balanceTotal >= _ownerBalance + _partnerBalance, "l"); //TO DO: should this be strict equality??
-                if (i == 0 && tokenAddress == NATIVE_TOKEN) {
-                    payable(partnerAddr).transfer(_partnerBalance);
-                } else {
-                    IERC20 token = IERC20(tokenAddress);
-                    token.transfer(partnerAddr, _partnerBalance);
-                }
-                tokenAmounts[tokenAddress] += _ownerBalance;
+                (uint ownerBal, address tokenAddress, uint ownerKLD) = calcBalsAndFees(message, balanceTotal, i, partnerAddr);
+                totalKLD += ownerKLD;
+                tokenAmounts[tokenAddress] += ownerBal;
                 if (!finalNotSubset) {
                     //is subset, so we want to trck the new balanceTotals
                     balanceTotalsNew[i] = 0;
                 }
             }  
-            if (!finalNotSubset) {
-                //is subset, be we aren't settling this token, so we just keep it the same as before
+            else if (!finalNotSubset) {
+                //is subset, but we aren't settling this token, so we just keep it the same as before
                 balanceTotalsNew[i] == balanceTotal;
             }  
+            //NOTE: in case where balanceTotal == 0 and !finalNotSubset, then we dont set the balanceTotalsNew[i]. This is okay, as balanceTotalsNew defaults to 0. 
         }
+        tokenAmounts[KALADIMES_ACCRUE_ADDR] += totalKLD;
         return uint160(bytes20(abi.encodePacked(balanceTotalsNew)));
     }
 
@@ -809,13 +916,13 @@ library StormLib {
         //we do this by looping over all the balances, adding how much the shards will add to these when settled, making sure no overflow when compared with the stored balanceTotals
         uint startBal = START_ADDRS + (numTokens * 20);
         uint nonceOrDeadline = (msgType == MsgType.INITIAL) ? 32 : 4; //if Inital, we strip off a 32 byte deadline; if UNCOND, SHARD, we strip off a 4 byte nonce. Also relevant for knowing where balanceTotals start
-        for (uint8 i = 0; i < numTokens; i++) {
+        for (uint i = 0; i < numTokens; i++) {
             uint balanceTotal;
             uint notInShards;
             assembly {
-                let startOwnerBal := add(message.offset, add(startBal, mul(64, i)))
+                let startOwnerBal := add(message.offset, add(startBal, mul(128, i)))
                 notInShards := add(calldataload(startOwnerBal), calldataload(add(startOwnerBal, 32)))
-                balanceTotal := calldataload(add(add(add(add(message.offset, startBal), mul(numTokens, 64)), nonceOrDeadline), mul(i, 32))) //starts at end of shardedMsg, right after nonce or deadline. We start at startBals, jump over all the bals, then add 32/4 to jump over the deadline/nonce.
+                balanceTotal := calldataload(add(add(add(add(message.offset, startBal), mul(numTokens, 128)), nonceOrDeadline), mul(i, 32))) //starts at end of shardedMsg, right after nonce or deadline. We start at startBals, jump over all the bals, then add 32/4 to jump over the deadline/nonce.
             }
             balanceTotalsWithShards[i] += notInShards;
             require(balanceTotalsWithShards[i] <= balanceTotal, "l"); //TO DO: should this be strict equality?
@@ -920,7 +1027,7 @@ library StormLib {
         uint shardBlockTimeout;
         assembly { shardBlockTimeout := calldataload(sub(add(message.offset, message.length), 32)) } //accesses blockAtDispute
         for (uint i = 0; i < shardNos.length; i++) {
-            uint shardPointer = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * 84) + 1 + (shardNos[i] * LEN_SHARD) + 34])); //point this to proper shards tokenIndex, jumpin over tokenBalances, numShards, prior shards, and then tokenIndex, oGoR, amount
+            uint shardPointer = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1 + (shardNos[i] * LEN_SHARD) + 34])); //point this to proper shards tokenIndex, jumpin over tokenBalances, numShards, prior shards, and then tokenIndex, oGoR, amount
             require(block.number <= shardBlockTimeout + uint(uint8(message[shardPointer])) * BLOCKS_PER_HOUR, "e"); //add blockAtDispute + shardblockTimeoutHours * BLOCKS_PER_HOUr
             address partnerAddr;
             assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: so that reads up to -3 + 32 = 29, which is where partnerAddr ends in message
@@ -975,7 +1082,7 @@ library StormLib {
     
 
 
-    function addShardsInWithdraw(bytes calldata message, BalancePair[] memory shardTokenBals, uint numTokens, uint8 numShards) pure private {
+    function addShardsInWithdraw(bytes calldata message, BalanceStruct[] memory shardTokenBals, uint numTokens, uint8 numShards) pure private {
         //we will go through and add all the shard information to shardTokenBals.
         uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1; //points now to tokenIndex of first shard.
         for (uint8 i = 0; i < numShards; i++) {
@@ -985,10 +1092,16 @@ library StormLib {
             assembly { amount := calldataload(add(message.offset, add(shardPointer, 2))) } //MAGICNUMBERNOTE: jumps over tokenINdex, ownerGoR
             if ((ownerGiving && (shardState == ShardState.REVERTED || shardState == ShardState.INITIAL)) || (!ownerGiving && shardState == ShardState.PUSHEDFORWARD)) { //} || (ownerControlsHashlock == 0 && shardState == ShardState.SLASHED)) {
                 //owner was giving and the funds reverted, so owner gets them back, or owner was receiving and it was pushed through, so owner actually gets them.
-                shardTokenBals[i].ownerBalance += amount;
+                shardTokenBals[i].ownerBal += amount;
+                if (shardState == ShardState.PUSHEDFORWARD) {
+                    shardTokenBals[i].partnerFee += amount; //partnerFee since they were the sender. Only add fees for swaps that suceeed
+                }
             } else {
                 //owner was giving and funds pushed through, so partner gets them, or partner was receiving and reverted, so partner gets them back
-                shardTokenBals[i].partnerBalance += amount;
+                shardTokenBals[i].partnerBal += amount;
+                if (shardState == ShardState.PUSHEDFORWARD) {
+                    shardTokenBals[i].ownerFee += amount; //ownerFee since they were the sender. Only add fees for swaps that suceeed
+                }
             }
             shardPointer += LEN_SHARD;
 
@@ -1005,10 +1118,10 @@ library StormLib {
             //         assembly { amount := calldataload(add(add(shardPointer, add(1, numTokens)), mul(seen, 32))) } //points shardPointer over uint8[], numAmounts byte, to then index into the proper amount in amounts[] 
             //         //giveFundsToOwnerCases:
             //         if ((person == 1 && (shardState == ShardState.REVERTED || shardState == ShardState.INITIAL)) || (person == 2 && shardState == ShardState.PUSHEDFORWARD) || (ownerControlsHashlock == 0 && shardState == ShardState.SLASHED)) {
-            //             shardTokenBals[i].ownerBalance += amount;
+            //             shardTokenBals[i].ownerBal += amount;
             //         } else {
             //             //we don't bother checking whether this is going to partner. By process of elim, since not going to owner, must be going to partner
-            //             shardTokenBals[i].partnerBalance += amount;
+            //             shardTokenBals[i].partnerBal += amount;
             //         }
             //     seen += 1;
             //     }
@@ -1030,31 +1143,26 @@ library StormLib {
         //all shardBlockTimeouts, disputeBlockTimeout have ended, channel actually exists, it is now safe to send out values
         
         uint startBals = START_ADDRS + (numTokens * 20);
-        BalancePair[] memory shardTokenBals = new BalancePair[](numTokens); //this stores owner, partner split for each token.
-        assembly { calldatacopy(add(shardTokenBals, 32), add(message.offset, startBals), mul(numTokens, 64)) }  //lets initialize it with the non sharded information stored in message balances right after tokens
+        BalanceStruct[] memory shardTokenBals = new BalanceStruct[](numTokens); //this stores owner, partner split for each token.
+        assembly { calldatacopy(add(shardTokenBals, 32), add(message.offset, startBals), mul(numTokens, 128)) }  //lets initialize it with the non sharded information stored in message balances right after tokens
 
         if (numShards > 0) {
             addShardsInWithdraw(message, shardTokenBals, numTokens, numShards);
         }
-
         //now, we have added all the shardedFunds into the shardTokenBals. Now, we need to go into unsharded token balances, and add in each owner, partner amount
-    
         address partnerAddr;
         assembly{ partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: so that reads up to -3 + 32 = 29, which is where partnerAddr ends in message
         
         address tokenAddress;
-        for (uint8 i = 0; i < numTokens; i++) {
-            assembly { tokenAddress := calldataload(add(message.offset, add(38, mul(i, 20)))) } //MAGICNUMBERNOTE: bc START_ADDRS is at 50, so first addr ends at 70 - 32 = 38
+        uint totalKLD;
+        for (uint i = 0; i < numTokens; i++) {
+            assembly { tokenAddress := calldataload(add(message.offset, add(58, mul(i, 20)))) } //MAGICNUMBERNOTE: bc START_ADDRS is at 70, so first addr starts 70 + 20 - 32 = 58
             //TO DO: could do another check here that no channel overflow, but feels unnecessary bc already been checked, and currently aren't even passing the balanceTotals array.
-            if (i == 0 && tokenAddress == NATIVE_TOKEN) {
-                payable(partnerAddr).transfer(shardTokenBals[i].partnerBalance);   
-            } else {
-                IERC20 token = IERC20(tokenAddress);
-                token.transfer(partnerAddr, shardTokenBals[i].partnerBalance);
-            }
-            tokenAmounts[tokenAddress] += shardTokenBals[i].ownerBalance;
+            calcBalsAndFeesWithdraw(shardTokenBals[i], tokenAddress, partnerAddr, i);
+            totalKLD += shardTokenBals[i].ownerFee;
+            tokenAmounts[tokenAddress] += shardTokenBals[i].ownerBal;
         }
-        
+        tokenAmounts[KALADIMES_ACCRUE_ADDR] += totalKLD;
         //clean up
         delete channels[channelID];
     }
