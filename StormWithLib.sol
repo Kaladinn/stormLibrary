@@ -18,13 +18,13 @@ pragma solidity ^0.8.7;
 
 // import './githubFolder/ERC20.sol';
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
-// import "./githubFolder/StormLibrary.sol";//TO DO: fix this with proper string value from github, or from actual contract usage.
-import "https://github.com/Kaladinn/stormLibrary/blob/main/StormLibrary.sol";
+import "./StormLibrary.sol";//TO DO: fix this with proper string value from github, or from actual contract usage.
+// import "https://github.com/Kaladinn/stormLibrary/blob/main/StormLibrary.sol";
 
 
 contract Storm {
     address immutable public owner; //public so people can ensure that contract owner is signing of chain msgs correctly for a given contract(node code)
-    mapping(address => uint) public tokenAmounts; //mapping from token to amount. 
+    mapping(address => StormLib.FeeStruct) public tokenAmounts; //mapping from token to amount for owner, and for Kaladin. 
     uint248 public lockCount; //num ongoing swaps
     uint8 reentrancyLock; //usually 0, but if enter function that makes external calls, then is set to 1(then back to 0 at end). All external non-view facing functions check that when entered, reentrancyLock == 0. 
     
@@ -33,7 +33,7 @@ contract Storm {
     
     constructor () payable {
         owner = msg.sender;
-        tokenAmounts[address(0)] = msg.value;
+        tokenAmounts[address(0)].ownerBal = msg.value;
         //TO DO: should user be able to optionally call addFunds here? Could be really hard to coordinate with approve calls since dont know nonce beforehand. 
     }
 
@@ -53,7 +53,7 @@ contract Storm {
      */
     receive() external payable {
         require(reentrancyLock == 0, "a");
-        tokenAmounts[address(0)] += msg.value;
+        tokenAmounts[address(0)].ownerBal += msg.value;
     }
 
 
@@ -64,34 +64,22 @@ contract Storm {
 
     
     //Pulls funds from the other contract
-    function addFundsToContract(address[] calldata tokens, uint[] calldata funds) external payable {
-        require(reentrancyLock == 0, "a");
-        require(msg.sender == owner, "g");
-        for (uint i = 0; i < tokens.length; i++) {
-            IERC20 token = IERC20(tokens[i]);
-            bool success = token.transferFrom(owner, address(this), funds[i]); //TO DO: consider reentrancy attacks here.
-            require(success, "j"); 
-            tokenAmounts[tokens[i]] += funds[i];
-        }
-        tokenAmounts[address(0)] += msg.value;
-        //TO DO: emit event here detailing all tokens added?. 
-    }
-
-
-    /**
-     * Called when the owner wants to delete the smart contract. Sends funds to owner. Note that any IERC20s
-     * that have approved this contract to spend from an allowance will need to be set back to 0 independently of terminateContract.
-     */
-    function terminateContract(IERC20[] calldata tokensInContract) external {
+    function updateChannelFunds(address[] calldata tokens, uint[] calldata funds, bool addingFunds, bool) external payable {
         require(reentrancyLock == 0, "a");
         reentrancyLock = 1;
-        require(msg.sender == owner && lockCount == 0, "h"); 
-        for (uint i = 0; i < tokensInContract.length; i++) {
-            tokensInContract[i].transfer(owner, tokenAmounts[address(tokensInContract[i])]); //TO DO: make sure IERC20 => address cast works.
-            // delete tokenAmounts[address(tokensInContract[i])];         //TO DO: is it more cheap/get a gas refund to delete all of the metadata? Or is this done automatically since its a self destruct? If not, delete this and below line. 
+        if (addingFunds) {
+            StormLib.addFundsToContract(tokens, funds, owner, tokenAmounts);
+            //TO DO: emit event here detailing all tokens added?. 
+        } else {
+            //either Kaladin or contract owner wants to withdraw funds...
+            if (msg.sender == owner) {
+                StormLib.withdrawFunds(tokens, funds, tokenAmounts, owner);
+            } else {
+                StormLib.withdrawFunds(tokens, funds, tokenAmounts, address(0));
+            }
         }
-        // reentrancyLock = 0;
-        selfdestruct(payable(owner));
+        reentrancyLock = 0;
+        
     }
 
     
