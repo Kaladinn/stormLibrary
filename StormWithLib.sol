@@ -63,23 +63,19 @@ contract Storm {
     }
 
     
-    //Pulls funds from the other contract
-    function updateChannelFunds(address[] calldata tokens, uint[] calldata funds, bool addingFunds, bool) external payable {
+    //This will either addFunds to the contract (callable by anyone) or will remove funds from contract and pay Kaladin, or will jsut pay Kaladin
+    function updateContractFunds(address[] calldata tokens, uint[] calldata funds, bool addingFunds) external payable {
         require(reentrancyLock == 0, "a");
         reentrancyLock = 1;
-        if (addingFunds) {
-            StormLib.addFundsToContract(tokens, funds, owner, tokenAmounts);
-            //TO DO: emit event here detailing all tokens added?. 
+        if (msg.sender == owner || addingFunds) {
+            //if addingFunds, then we will allow anyone to hit; heck, if you wanna deposit free money into someones contract, by our guest.
+            //if !addingFunds, then we require the msg.sender to be the owner; only the owner should dictate when they remove funds from contract
+            StormLib.updateContractFunds(tokens, funds, tokenAmounts, msg.sender, addingFunds);
         } else {
-            //either Kaladin or contract owner wants to withdraw funds...
-            if (msg.sender == owner) {
-                StormLib.withdrawFunds(tokens, funds, tokenAmounts, owner);
-            } else {
-                StormLib.withdrawFunds(tokens, funds, tokenAmounts, address(0));
-            }
+            //means that !addingFunds, and not sent by owner. Thus, this will settle out fees to Kaladin
+            StormLib.updateContractFunds(tokens, funds, tokenAmounts, address(0), addingFunds);
         }
         reentrancyLock = 0;
-        
     }
 
     

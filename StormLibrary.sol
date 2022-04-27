@@ -362,36 +362,32 @@ library StormLib {
 
     //****************************** Debugging Methods *****************************/
 
-    /** 
-     * Called when the owner wants to add more funds to the contract.
-    */
-    function addFundsToContract(address[] calldata tokens, uint[] calldata funds, address owner,  mapping(address => FeeStruct) storage tokenAmounts) external {
-        require(msg.sender == owner, "g");
-        for (uint i = 0; i < tokens.length; i++) {
-            bool success = IERC20(tokens[i]).transferFrom(owner, address(this), funds[i]); //TO DO: consider reentrancy attacks here.
-            require(success, "j"); 
-            tokenAmounts[tokens[i]].ownerBal += funds[i];
-        }
-        tokenAmounts[address(0)].ownerBal += msg.value;
-    }
-
 
     /**
-     * Called when the owner wants to remove an amount of token in tokens, dictated by the funds in funds. 
+     * This has two endpoints bundled into one to save gas; one to withdraw, and one to add funds.
+     * Tokens, funds dictate the tokens and how much of them to either add or subtract from contract
      * Sends funds to owner. Note that any IERC20s that have approved this contract to spend from an allowance will need to be set back to 0 independently.
-     * Or, will take all of the fees accrued by Kaladin, and will send them to Kaladin.
-     * NOTE: owner will pay costs to send Kaladin fees, or Kaladin can send itself. If not redeeming owner funds, ownerAddr is set to 0.
+     * NOTE: by default, any time the other withdraws funds from the contract, it will also pay out Kaladin fees. Kaladin can independently collect their fees by calling updateChannelFunds in the given contrct.
      */
-    function withdrawFunds(address[] calldata tokens, uint[] calldata funds, mapping(address => FeeStruct) storage tokenAmounts, address ownerAddr) external {
-        for (uint i = 0; i < tokens.length; i++) {
-            IERC20(tokens[i]).transfer(KALADIN_ADDR, tokenAmounts[tokens[i]].KaladinBal); 
-            tokenAmounts[tokens[i]].KaladinBal = 0;
-            if (ownerAddr != address(0)) {
-                tokenAmounts[tokens[i]].ownerBal -= funds[i]; //This will throw error if underflow bc trying to withdraw more funds than are owned.
-                IERC20(tokens[i]).transfer(ownerAddr, funds[i]); 
-                // delete tokenAmounts[address(tokensInContract[i])];         //TODO: **only is valid question if terminateFlag!! is it more cheap/get a gas refund to delete all of the metadata? Or is this done automatically since its a self destruct? If not, delete this and below line. 
+    function updateContractFunds(address[] calldata tokens, uint[] calldata funds, mapping(address => FeeStruct) storage tokenAmounts, address owner, bool addingFunds) external {
+        if (addingFunds) {
+            for (uint i = 0; i < tokens.length; i++) {
+                bool success = IERC20(tokens[i]).transferFrom(owner, address(this), funds[i]); //TO DO: consider reentrancy attacks here.
+                require(success, "j"); 
+                tokenAmounts[tokens[i]].ownerBal += funds[i];
             }
-        }  
+            tokenAmounts[address(0)].ownerBal += msg.value;
+        } else {
+            for (uint i = 0; i < tokens.length; i++) {
+                IERC20(tokens[i]).transfer(KALADIN_ADDR, tokenAmounts[tokens[i]].KaladinBal); 
+                tokenAmounts[tokens[i]].KaladinBal = 0;
+                if (owner != address(0)) {
+                    tokenAmounts[tokens[i]].ownerBal -= funds[i]; //This will throw error if underflow bc trying to withdraw more funds than are owned.
+                    IERC20(tokens[i]).transfer(owner, funds[i]); 
+                    // delete tokenAmounts[address(tokensInContract[i])];         //TODO: **only is valid question if terminateFlag!! is it more cheap/get a gas refund to delete all of the metadata? Or is this done automatically since its a self destruct? If not, delete this and below line. 
+                }
+            }  
+        }
     }
 
 
@@ -801,15 +797,19 @@ library StormLib {
     }
 
     //message starts at where the owner, partner balances will be.
-    function calcBalsAndFees(bytes calldata message, uint balanceTotal, uint i, address partnerAddr) private returns (BalanceStruct memory balanceStruct, address tokenAddress) {
-        //TODO:change numTokens, fill in all 70 w START_ADDRS
-        uint numTokens = uint(uint8(message[NUM_TOKEN]));     
-        assembly { 
-            calldatacopy(add(balanceStruct, 32), add(add(add(message.offset, START_ADDRS), mul(numTokens, 20)), mul(i, 128)), 128) 
-            tokenAddress := calldataload(add(add(message.offset, sub(START_ADDRS, 12)), mul(i, 20)))         
+    //This is called by both withdraw and settle/settlesubset. If its withdraw, we have already built out the balanceStruct, so we dont do that here. We have also checked that the balances dont exceed the 
+    //balanceTotal, so again, we only do this if settle/settleSubset. 
+    function calcBalsAndFees(bytes calldata message, BalanceStruct memory balanceStruct, uint balanceTotal, address partnerAddr, uint i) private returns (address tokenAddress) {
+        bool isSettle = (MsgType(uint8(message[0])) == MsgType.SETTLE || MsgType(uint8(message[0])) == MsgType.SETTLESUBSET);   
+             
+        if (isSettle) {
+            uint numTokens = uint(uint8(message[NUM_TOKEN]));
+            assembly { calldatacopy(add(balanceStruct, 32), add(add(add(message.offset, START_ADDRS), mul(numTokens, 20)), mul(i, 128)), 128) }
+            require(balanceTotal >= balanceStruct.ownerBal + balanceStruct.partnerBal, "l"); //TO DO: should this be strict equality??
         }
+        assembly { tokenAddress := calldataload(add(add(message.offset, sub(START_ADDRS, 12)), mul(i, 20))) }
     
-        require(balanceTotal >= balanceStruct.ownerBal + balanceStruct.partnerBal, "l"); //TO DO: should this be strict equality??
+        
         if (balanceStruct.ownerFee > balanceStruct.partnerFee) {
             (balanceStruct.ownerBal, balanceStruct.partnerBal, balanceStruct.ownerFee, balanceStruct.partnerFee) = feeLogic(balanceStruct.ownerBal, balanceStruct.partnerBal, balanceStruct.ownerFee, balanceStruct.partnerFee);
         } else {
@@ -819,7 +819,7 @@ library StormLib {
         uint conversionRate = 1; //TODO: call out to uniswap to get our actual conversion rate
 
         if (balanceStruct.partnerBal != 0) {
-            if (i == 0 && tokenAddress == NATIVE_TOKEN) {
+            if (tokenAddress == NATIVE_TOKEN) {
                 payable(partnerAddr).transfer(balanceStruct.partnerBal);
             } else {
                 IERC20(tokenAddress).transfer(partnerAddr, balanceStruct.partnerBal);
@@ -828,27 +828,7 @@ library StormLib {
         
         KALADIMES_CONTRACT.transferFrom(address(this), partnerAddr, conversionRate * balanceStruct.partnerFee); 
         balanceStruct.ownerFee *= conversionRate;
-        return (balanceStruct, tokenAddress);
-    }
-
-
-    function calcBalsAndFeesWithdraw(BalanceStruct memory shardTokenBal, address tokenAddress, address partnerAddr, uint i) private {
-        if (shardTokenBal.ownerFee > shardTokenBal.partnerFee) {
-            (shardTokenBal.ownerBal, shardTokenBal.partnerBal, shardTokenBal.ownerFee, shardTokenBal.partnerFee) = feeLogic(shardTokenBal.ownerBal, shardTokenBal.partnerBal, shardTokenBal.ownerFee, shardTokenBal.partnerFee);
-        } else {
-            (shardTokenBal.partnerBal, shardTokenBal.ownerBal, shardTokenBal.partnerFee, shardTokenBal.ownerFee) = feeLogic(shardTokenBal.partnerBal, shardTokenBal.ownerBal, shardTokenBal.partnerFee, shardTokenBal.ownerFee);
-        }
-        
-        uint conversionRate = 1; //TODO: call out to uniswap to get our actual conversion rate
-
-        if (i == 0 && tokenAddress == NATIVE_TOKEN && shardTokenBal.partnerBal != 0) {
-            payable(partnerAddr).transfer(shardTokenBal.partnerBal);
-        } else if (shardTokenBal.partnerBal != 0) {
-            IERC20(tokenAddress).transfer(partnerAddr, shardTokenBal.partnerBal);
-        }
-        KALADIMES_CONTRACT.transferFrom(address(this), partnerAddr, conversionRate * shardTokenBal.partnerFee); 
-
-        shardTokenBal.ownerFee *= conversionRate;
+        return (tokenAddress);
     }
 
     //helper that distributes the funds, used by settle and settlesubset
@@ -862,7 +842,8 @@ library StormLib {
             assembly { balanceTotal := calldataload(add(add(add(message.offset, START_ADDRS), mul(numTokens, TOKEN_PLUS_BALS_UNIT)), mul(i, 32))) } 
             if (balanceTotal != 0 && (finalNotSubset || (uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + i]) == 1))) {
                 //should settle this token. Either bc nonempty and settle, or nonempty and subsetSettle with flag set
-                (BalanceStruct memory balanceStruct, address tokenAddress) = calcBalsAndFees(message, balanceTotal, i, partnerAddr);
+                BalanceStruct memory balanceStruct;
+                address tokenAddress = calcBalsAndFees(message, balanceStruct, balanceTotal, partnerAddr, i);
                 totalKLD += balanceStruct.ownerFee;
                 tokenAmounts[tokenAddress].ownerBal += balanceStruct.ownerBal;
                 tokenAmounts[tokenAddress].KaladinBal += (balanceStruct.ownerFee + balanceStruct.partnerFee);
@@ -1189,9 +1170,8 @@ library StormLib {
         address tokenAddress;
         uint totalKLD;
         for (uint i = 0; i < numTokens; i++) {
-            assembly { tokenAddress := calldataload(add(message.offset, add(sub(START_ADDRS, 12), mul(i, 20)))) }
-            //TO DO: could do another check here that no channel overflow, but feels unnecessary bc already been checked, and currently aren't even passing the balanceTotals array.
-            calcBalsAndFeesWithdraw(shardTokenBals[i], tokenAddress, partnerAddr, i);
+            //NOTE: no need ot check local bals are les than balanceTotal; havev already done so in startDispute. So, we pass 0 as balanceTotal, as a dummy paramt that calcBalsAndFees will just ignore.
+            tokenAddress = calcBalsAndFees(message, shardTokenBals[i], 0, partnerAddr, i);
             totalKLD += shardTokenBals[i].ownerFee;
             tokenAmounts[tokenAddress].ownerBal += shardTokenBals[i].ownerBal;
             tokenAmounts[tokenAddress].KaladinBal += (shardTokenBals[i].ownerFee + shardTokenBals[i].partnerFee);
