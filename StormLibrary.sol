@@ -223,8 +223,9 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         byte msgType
 //         (variable) channelID 
 //         uint[] balances
-//             array of all the balances, given by ownerAmount, then partnerAmount, then feesOwner, then feesPartner
-//             For example, if there are two tokens in the channel, this will be 2 * (4 * 32) = 256 bytes long, arranged by ownerAmount0, partnerAmount0, ownerAmount1, partnerAmount1.
+//             array of all the balances, given by ownerAmount, then partnerAmount, then ownerFees, then partnerFees
+//                 ownerFees represent the amount of fees the owner is paying, and partnerFees represents the amount of fees the partner is paying
+//             For example, if there are two tokens in the channel, this will be 2 * (4 * 32) = 256 bytes long, arranged by ownerAmount0, partnerAmount0, ownerFees1, partnerFees1.
 //             It is assumed balances in same order as tokens. Not side by side, bc balances change and channelID must be immutable. 
 //         uint deadline
 //             the block number by which this tx must be submitted. Used to scope validity of anchor signatures 
@@ -345,8 +346,8 @@ library StormLib {
     address constant KALADIMES_BAL_MAP_INDEX = address(1); //constant, essentially a mapping key, to store how much Kaladime the owner has earned in yield. Cheaper to store, then call out all at once to contract rather than call transferFrom for each settle
     address constant KALADIN_ADDR = address(2); //TODO: remove 2 as placeholder. This is address that Kaladin will remove funds from, call withdraw from. 
     uint constant LEN_SHARD = 67;
-    uint constant FEE_DENOM = 10000; //is the denominator for the fee. So, this translates to 1/ 10000, or 0.01%. If were say 5, this would be a 20% fee
-    uint constant FEE_DENOM_KAL = 10; //is the denom for the percentage of the fees that Kaladin takes
+    //With the current vals below, we have it work out that the fee receiver gets a bip, and Kaladin gets 1/10 of a bip. Thus, we anticipate that with fees of 1.1 bips, receiver gets 1, Kal gets 0.1. (1.1 / 11 - 0.1, as desired.)
+    uint constant FEE_DENOM_KAL = 11; //is the denom for the percentage of the fees that Kaladin takes
     
     //****************************** Debugging Methods *****************************/
 
