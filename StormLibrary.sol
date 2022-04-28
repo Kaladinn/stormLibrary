@@ -889,10 +889,10 @@ library StormLib {
     }
 
 
-    function settleSubset(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels, mapping(address => FeeStruct) storage tokenAmounts) external returns(uint channelID, uint32 nonce, uint numTokens) {
+    function settleSubset(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels, mapping(address => FeeStruct) storage tokenAmounts) external returns(uint channelID, uint32 nonce) {
         require (MsgType(uint8(message[0])) == MsgType.SETTLESUBSET, "p");
 
-        numTokens = uint(uint8(message[NUM_TOKEN]));
+        uint numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        

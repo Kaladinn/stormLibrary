@@ -131,7 +131,7 @@ contract Storm {
             emit StormLib.Settled(channelID, message[StormLib.START_ADDRS: message.length]);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.SETTLESUBSET) {
             (uint channelID, uint32 nonce, uint numTokens) = StormLib.settleSubset(message, signatures, owner, channels, tokenAmounts);
-            emit StormLib.SettledSubset(channelID, nonce, message[message.length - numTokens - 4: message.length]);
+            emit StormLib.SettledSubset(channelID, nonce, message[START_ADDRS: message.length]);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.STARTDISPUTE) {
             (uint channelID, uint32 nonce, StormLib.MsgType msgType) = StormLib.startDispute(message, signatures, owner, channels);
             emit StormLib.DisputeStarted(channelID, nonce, msgType);
