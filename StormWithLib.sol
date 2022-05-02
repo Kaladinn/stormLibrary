@@ -37,15 +37,6 @@ contract Storm {
         //TO DO: should user be able to optionally call addFunds here? Could be really hard to coordinate with approve calls since dont know nonce beforehand. 
     }
 
-    //****************************** Debugging Methods *****************************/
-
-    function getContractBalances(address[] calldata tokens) external view returns (bytes memory) {
-       return StormLib.getContractBalances(tokens, tokenAmounts);
-    }
-    
-
-
-    //****************************** Debugging Methods *****************************/
 
 
     /** TO DO: we could delete this, and it would save us up to 0.01 ETH. Can always do this using addFundsToContract
@@ -130,8 +121,8 @@ contract Storm {
             lockCount -= 1;
             emit StormLib.Settled(channelID, message[StormLib.START_ADDRS: message.length]);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.SETTLESUBSET) {
-            (uint channelID, uint32 nonce, uint numTokens) = StormLib.settleSubset(message, signatures, owner, channels, tokenAmounts);
-            emit StormLib.SettledSubset(channelID, nonce, message[START_ADDRS: message.length]);
+            (uint channelID, uint32 nonce) = StormLib.settleSubset(message, signatures, owner, channels, tokenAmounts);
+            emit StormLib.SettledSubset(channelID, nonce, message[StormLib.START_ADDRS: message.length]);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.STARTDISPUTE) {
             (uint channelID, uint32 nonce, StormLib.MsgType msgType) = StormLib.startDispute(message, signatures, owner, channels);
             emit StormLib.DisputeStarted(channelID, nonce, msgType);

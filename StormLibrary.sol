@@ -348,20 +348,6 @@ library StormLib {
     uint constant LEN_SHARD = 67;
     //With the current vals below, we have it work out that the fee receiver gets a bip, and Kaladin gets 1/10 of a bip. Thus, we anticipate that with fees of 1.1 bips, receiver gets 1, Kal gets 0.1. (1.1 / 11 - 0.1, as desired.)
     uint constant FEE_DENOM_KAL = 11; //is the denom for the percentage of the fees that Kaladin takes
-    
-    //****************************** Debugging Methods *****************************/
-
-    function getContractBalances(address[] calldata tokens,  mapping(address => FeeStruct) storage tokenAmounts) external view returns (bytes memory) {
-        bytes memory balances = new bytes(tokens.length * 32);
-        for (uint i = 0; i < tokens.length; i++) {
-            address addr = tokens[i];
-            uint val = tokenAmounts[addr].ownerBal;
-            assembly{ mstore(add(add(balances, 32), mul(i, 32)), val) }
-        }
-        return balances;
-    }
-
-    //****************************** Debugging Methods *****************************/
 
 
     /**
@@ -377,14 +363,24 @@ library StormLib {
                 require(success, "j"); 
                 tokenAmounts[tokens[i]].ownerBal += funds[i];
             }
-            tokenAmounts[address(0)].ownerBal += msg.value;
+            tokenAmounts[NATIVE_TOKEN].ownerBal += msg.value;
         } else {
             for (uint i = 0; i < tokens.length; i++) {
-                IERC20(tokens[i]).transfer(KALADIN_ADDR, tokenAmounts[tokens[i]].KaladinBal); 
+                //settle KaladinBals
+                if (tokens[i] == NATIVE_TOKEN) {
+                    payable(KALADIN_ADDR).transfer(tokenAmounts[tokens[i]].KaladinBal);
+                } else {
+                    IERC20(tokens[i]).transfer(KALADIN_ADDR, tokenAmounts[tokens[i]].KaladinBal); 
+                }
                 tokenAmounts[tokens[i]].KaladinBal = 0;
                 if (owner != address(0)) {
+                    //settle ownerBals
                     tokenAmounts[tokens[i]].ownerBal -= funds[i]; //This will throw error if underflow bc trying to withdraw more funds than are owned.
-                    IERC20(tokens[i]).transfer(owner, funds[i]); 
+                    if (tokens[i] == NATIVE_TOKEN) {
+                        payable(owner).transfer(funds[i]);
+                    } else {
+                        IERC20(tokens[i]).transfer(owner, funds[i]); 
+                    }
                     // delete tokenAmounts[address(tokensInContract[i])];         //TODO: **only is valid question if terminateFlag!! is it more cheap/get a gas refund to delete all of the metadata? Or is this done automatically since its a self destruct? If not, delete this and below line. 
                 }
             }  
