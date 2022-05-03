@@ -287,8 +287,8 @@ library StormLib {
     event Anchored(uint indexed channelID, bytes tokensAndVals);
     event Settled(uint indexed channelID, bytes tokenBalances);
     event SettledSubset(uint indexed channelID, uint32 indexed nonce, bytes tokenBalances);
-    event DisputeStarted(uint indexed channelID, uint32 indexed nonce, StormLib.MsgType indexed msgType); //TO DO: maybe delete msgType?
-    event ShardStateChanged(uint indexed channelID, uint8[] indexed shardNos, uint preimage, uint msgHash);
+    event DisputeStarted(uint indexed channelID, uint32 indexed nonce, bytes message); //TO DO: maybe delete msgType?
+    event ShardStateChanged(uint indexed channelID, uint8[] indexed shardNos, uint preimage);
     event FundsAddedToChannel(uint indexed channelID, uint32 indexed nonce, bytes tokensAdded);
     event Swapped(uint indexed msgHash); //in singlechain case, means that swap has completed. In multichain, means that has been anchored
     event MultichainRedeemed(uint indexed msgHash, bool redeemed, uint hashlock); //redeemed here is a variable that says whether the propoer preimage shown to unlcok funds. If false, means that timeout occurred and funds reverted back to their sources. if redeemed, hashlock is the proper preimage used.
@@ -942,7 +942,7 @@ library StormLib {
             bytes memory shardDataMsg = new bytes(numShards + 32); //MAGICNUMBERNOTE: we store byte(numShards) + uint8[numShards] + uint(blockAtDisputeStart)
             uint blockNumber = block.number;
             assembly { mstore(add(add(shardDataMsg, 32), numTokens), blockNumber) } //add in block.number afterupdateStatus' array
-            channel.msgHash = uint(keccak256(abi.encodePacked(message[0: message.length - (numTokens * 32) - 4], shardDataMsg))); //TO DO: make sure this packs correctly to a msgHash type for sharded
+            channel.msgHash = uint(keccak256(abi.encodePacked(message[0: message.length - (numTokens * 32) - 4], shardDataMsg)));
         } else {
             channel.msgHash = uint(keccak256(message[0 : message.length - (numTokens * 32) - nonceOrDeadline])); //We need everything(channelID, token splits, msg data, except for the balanceTotals and the nonce)
         }
@@ -996,12 +996,13 @@ library StormLib {
      * startDispute can be called by owner or partner only. Done to prevent any malicious activity on the part of the watchtowers.
      */
      //Receives a {INITIAL, UNCONDITIONAL, SHARDED, UNCONDITIONALSUBSET} || balanceTotalsMsg. Stores in msgHash = {msgType with deadline(INITIAL), nonce(else) stripped out} || shardDataMsg
-    function startDispute(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external returns(uint channelID, uint32 nonce, MsgType msgType) {
-        uint numTokens = uint(uint8(message[NUM_TOKEN]));
+    function startDispute(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external returns(uint channelID, uint32 nonce, uint numTokens) {
+        numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));     
         Channel storage channel = channels[channelID]; 
         require(channel.exists, "u");
         require(channel.balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
+        MsgType msgType;
         (nonce, msgType) = disputeStartedChecks(channel, message, signatures, numTokens, owner); //for simiplicity of checks concerning the partners signing addr, we call checkSignatures in here
         
         //properly set the shards, while also checking for overflows of channel balances
@@ -1079,10 +1080,9 @@ library StormLib {
      */
      //message here is the message that was stored for channel.msgHash + shardStateChangeData
      //takes in same message that is stored in msgHash in startDispute, or that has been updated and restored here in changeShardState
-    function changeShardState(bytes calldata message, uint hashlockPreimage, uint8[] calldata shardNos, mapping(uint => Channel) storage channels) external returns(uint channelID, uint msgHash) {
+    function changeShardState(bytes calldata message, uint hashlockPreimage, uint8[] calldata shardNos, mapping(uint => Channel) storage channels) external returns(uint channelID) {
         channelID = doChecksUpdateShard(channels, message, shardNos);
-        msgHash = changeShardStateHelper(message, shardNos, hashlockPreimage);
-        channels[channelID].msgHash = msgHash;
+        channels[channelID].msgHash = changeShardStateHelper(message, shardNos, hashlockPreimage);
     }
 
 
