@@ -38,7 +38,6 @@ contract Storm {
     }
 
 
-
     /** TO DO: we could delete this, and it would save us up to 0.01 ETH. Can always do this using addFundsToContract
      * Fallback. Call if want to stake more ETH into the contract. 
      */

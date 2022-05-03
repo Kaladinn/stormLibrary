@@ -86,16 +86,10 @@ pragma solidity ^0.8.0;
 
 //TODO: add selfdestruct() functionality? More complicated now, bc cant self destruct until sure that both Kaladin and owner have fully redeemed 
 
-//TODO: do we want to strip out disputeBlockTimeout altogether and enfore it to be say, 2 hours, or 1 hour, or 30 mins, or a contract constant that is blockcahin dependent.
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
 
 
 // channelID:
-//     uint8 disputeBlockTimeout
-//         single byte because the value represents the number of hours of the timeout in blocks. i.e. for eith, disputeBlockTimeout = 1 corresponds to 240 blocks.
-//         This is the timeout, a constant in the channel, that last from when startDispute is called, in blocks. 
-//         Other parties can trump this message as long as it falls within disputeBlockTimeout. 
-//         Note that even after disputeBlockTimeout has ended, parties can still change shardBlockTimeouts. Also, a withdraw call cant succed until after this timeout has ended, to allow counterparty time to trump. 
 //     uint32 contractNonce:
 //         this is the nonce for the channel, which is incremented for every new channel that is entered into in the contract. 
 //         This is to prevent against a replay attack by someone who has restaked into the contract with the same tokens,
@@ -338,8 +332,9 @@ library StormLib {
     uint constant BLOCKS_PER_HOUR = 240;
     
     //MAGIC NUMBERS
-    uint8 constant NUM_TOKEN = 69;
-    uint8 constant START_ADDRS = 70;
+    uint constant DISPUTE_BLOCK_HOURS = 1;
+    uint8 constant NUM_TOKEN = 68;
+    uint8 constant START_ADDRS = 79;
     uint8 constant TOKEN_PLUS_BALS_UNIT = 148; //for 20 byte addr + 64 bytes bals + 64 bytes fees
     address constant NATIVE_TOKEN = address(0);
     IERC20 constant KALADIMES_CONTRACT = IERC20(address(0)); //TODO: make this a real contract
@@ -474,7 +469,7 @@ library StormLib {
 
     function doAnchorChecks(bytes calldata message) private view returns (uint) {
         uint assemblyVariable; //first is chainID, then is contractAddress, then finally deadline
-        assembly { assemblyVariable := calldataload(sub(message.offset, 23)) } //MAGICNUMBERNOTE: bc chainID sits at position 6-8, so -23 + 32 = 9, will have last byte as pos. 8, as desired!
+        assembly { assemblyVariable := calldataload(sub(message.offset, 24)) } //MAGICNUMBERNOTE: bc chainID sits at position 5-7, so -24 + 32 = 8, will have last byte as pos. 7, as desired!
         require(uint(uint24(assemblyVariable)) == block.chainid, "q"); //have to cast it to a uint24 bc thats how it is in message, to strip out all invalid data before it, then recast it to compare it to the chainid, which is a uint. 
 
         assembly { assemblyVariable := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: bc contractAddress ends at NUM_TOKEN
@@ -623,7 +618,7 @@ library StormLib {
     function anchor(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels, mapping(address => FeeStruct) storage tokenAmounts) external returns (uint) {
         doAnchorChecks(message);
         address partnerAddr;
-        assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: partnerAddr sits at finish at 29, and 29 - 32 = -3
+        assembly { partnerAddr := calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: partnerAddr sits at finish at 28, and 28 - 32 = -4
         checkSignatures(message, signatures, owner, partnerAddr);
         require(MsgType(uint8(message[0])) == MsgType.INITIAL, "p");
     
@@ -689,12 +684,12 @@ library StormLib {
         uint amountToAddPartner;
         uint prevBalanceTotal;
         address partnerAddr; //is calced here not in addFundsToChannel, bc msg sig was based off of pSignerAddr, whihc may not actually have possession of funds
-        assembly { partnerAddr := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: -3 bc ends at 29, 29 - 32 = -3
+        assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: -3 bc ends at 28, 28 - 32 = -4
 
         uint[] memory balanceTotalsNew = new uint[](numTokens);
         for (uint i = 0; i < numTokens; i++) {
             assembly { 
-                let startBalOwner := add(add(add(message.offset, START_ADDRS), mul(20, numTokens)), mul(i, 128)) //MAGICNUMBERNOTE: e add 20 * numTokens to this to get start of balances
+                let startBalOwner := add(add(add(message.offset, START_ADDRS), mul(20, numTokens)), mul(i, 128)) //MAGICNUMBERNOTE: add 20 * numTokens to this to get start of balances
                 tokenAddress := calldataload(add(add(message.offset, sub(START_ADDRS, 12)), mul(i, 20)))
                 amountToAddOwner := calldataload(startBalOwner)
                 amountToAddPartner := calldataload(add(startBalOwner, 32))
@@ -831,7 +826,7 @@ library StormLib {
     //helper that distributes the funds, used by settle and settlesubset
     function distributeSettleTokens(bytes calldata message, uint numTokens, mapping(address => FeeStruct) storage tokenAmounts, bool finalNotSubset) private returns (uint160) {
         address partnerAddr;
-        assembly { partnerAddr := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: -3 bc ends at 29, 29 - 32 = -3
+        assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: -4 bc ends at 28, 28 - 32 = -4
         uint totalKLD;
         uint[] memory balanceTotalsNew = new uint[]((finalNotSubset ? 0 : numTokens)); //TO DO: make sure this costs no gas if in finalNotSubset case
         for (uint i = 0; i < numTokens; i++) {
@@ -963,11 +958,11 @@ library StormLib {
                 partnerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32)))  //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes            }
             }
             checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, partnerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.  
-            assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: getting partnerAddr set correctly for check below, where we require msg.sender == partnerAddr
+            assembly { partnerAddr := calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: getting partnerAddr set correctly for check below, where we require msg.sender == partnerAddr
  
         } else {
             //is initial, so we want to check sig off of the partnerAddr, not pSignerAddr
-            assembly { partnerAddr := calldataload(sub(message.offset, 3)) }//MAGICNUMBERNOTE: bc end of partnerAddr sits at 29, 29 - 32 = -3
+            assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: bc end of partnerAddr sits at 28, 28 - 32 = -4
             checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, partnerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.   
         }
 
@@ -983,9 +978,7 @@ library StormLib {
         if (!channel.settlementInProgress) {
             require(msg.sender == partnerAddr || msg.sender == owner, "i");//Done so that watchtowers cant startDisputes. They can only trump already started settlements.
             require(nonce >= channel.nonce, "x"); //>= includes equals for case where starting settlement with a message that was used in a update() call already. Note shards cannot be used in update(), so shards will always be >. Didn't include this separately since checking >= is the same as checking >, for if not settling no way sharded nonce could have already been seen
-            uint8 disputeBlockTimeoutHours;
-            assembly{ disputeBlockTimeoutHours := calldataload(sub(message.offset, 30)) } //MAGICNUMBERNOTE: 30 bc disputeBlockTimeout sits at position 01, so -30 + 32 = 2, will have last byte as pos. 1, as desired!
-            channel.disputeBlockTimeout = uint32(block.number + (uint(disputeBlockTimeoutHours) * BLOCKS_PER_HOUR)); //Note we only set this first startDispute call: all subsequent trumps must make it within this initially activated timeout. There is no reset.
+            channel.disputeBlockTimeout = uint32(block.number + (DISPUTE_BLOCK_HOURS * BLOCKS_PER_HOUR)); //Note we only set this first startDispute call: all subsequent trumps must make it within this initially activated timeout. There is no reset.
             channel.settlementInProgress = true;
         } else {
             require(nonce > channel.nonce, "x");
@@ -1044,7 +1037,7 @@ library StormLib {
             uint shardPointer = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1 + (shardNos[i] * LEN_SHARD) + 34])); //point this to proper shards tokenIndex, jumpin over tokenBalances, numShards, prior shards, and then tokenIndex, oGoR, amount
             require(block.number <= shardBlockTimeout + uint(uint8(message[shardPointer])) * BLOCKS_PER_HOUR, "e"); //add blockAtDispute + shardblockTimeoutHours * BLOCKS_PER_HOUr
             address partnerAddr;
-            assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: so that reads up to -3 + 32 = 29, which is where partnerAddr ends in message
+            assembly { partnerAddr := calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: so that reads up to -4 + 32 = 28, which is where partnerAddr ends in message
         
             // shardMessageIndex = message.length - 32 - (numTokens - shardNos[i]);
             // ShardState shardState = ShardState(uint8(message[shardMessageIndex]));//extract out shard state stored. is the index at which the shard is storing shardState in shardDataMsg
@@ -1100,7 +1093,7 @@ library StormLib {
             ShardState shardState = ShardState(uint8(message[message.length - 32 - (numShards - i)]));
             uint amount;
             bool ownerGiving = uint8(message[shardPointer + 1]) == 1; //jumps shardPointer over tokenIndex
-            assembly { amount := calldataload(add(message.offset, add(shardPointer, 2))) } //MAGICNUMBERNOTE: jumps over tokenINdex, ownerGoR
+            assembly { amount := calldataload(add(message.offset, add(shardPointer, 2))) } //MAGICNUMBERNOTE: jumps over tokenIndex, ownerGoR
             if ((ownerGiving && (shardState == ShardState.REVERTED || shardState == ShardState.INITIAL)) || (!ownerGiving && shardState == ShardState.PUSHEDFORWARD)) { //} || (ownerControlsHashlock == 0 && shardState == ShardState.SLASHED)) {
                 //owner was giving and the funds reverted, so owner gets them back, or owner was receiving and it was pushed through, so owner actually gets them.
                 shardTokenBals[i].ownerBal += amount;
@@ -1162,7 +1155,7 @@ library StormLib {
         }
         //now, we have added all the shardedFunds into the shardTokenBals. Now, we need to go into unsharded token balances, and add in each owner, partner amount
         address partnerAddr;
-        assembly{ partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: so that reads up to -3 + 32 = 29, which is where partnerAddr ends in message
+        assembly{ partnerAddr := calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: so that reads up to -4 + 32 = 28, which is where partnerAddr ends in message
         
         address tokenAddress;
         uint totalKLD;
