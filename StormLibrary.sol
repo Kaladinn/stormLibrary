@@ -343,7 +343,7 @@ library StormLib {
     uint constant LEN_SHARD = 67;
     //With the current vals below, we have it work out that the fee receiver gets a bip, and Kaladin gets 1/10 of a bip. Thus, we anticipate that with fees of 1.1 bips, receiver gets 1, Kal gets 0.1. (1.1 / 11 - 0.1, as desired.)
     uint constant FEE_DENOM_KAL = 11; //is the denom for the percentage of the fees that Kaladin takes
-
+    uint constant FEE_DENOM_TOTAL = 9090;// corresponds to 0.00011 of which 0.0001 to CP, 0.00001 to Kaladin
 
     /**
      * This has two endpoints bundled into one to save gas; one to withdraw, and one to add funds.
@@ -757,6 +757,8 @@ library StormLib {
     //In the end, an individual can lose money based on whether their CPs fees end up being greater than the channel fees, but Kaladin will never give out more Kaladimes that they receive in fees (up to a constant of proportionality).
     function feeLogic(uint bal1, uint bal2, uint fee1, uint fee2) private pure returns (uint, uint, uint, uint) {
             //partner is gaining funds from fees, but may owe more than they can pay, to Kaladin
+            fee1 = uint(fee1 / FEE_DENOM_TOTAL); //convert fee from total sent through channel, to amount acutally needing to pay.
+            fee2 = uint(fee2 / FEE_DENOM_TOTAL);
             uint KaladinFee1 = fee1 / FEE_DENOM_KAL;
             uint KaladinFee2 = fee2 / FEE_DENOM_KAL;
             uint fee2To1 = fee2 - KaladinFee2;
