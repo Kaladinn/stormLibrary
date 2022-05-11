@@ -110,54 +110,8 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 
 // shardDataMsg: 
     // uint8[] shardStates
-        //stores all of the states of 0, 1, 2, 3 for each shards state (INITIAL, REVERTED, PUSHEDFORWARD, SLASHED)
-            //indicates whether hashlock owner revealed the secret, and pushed state forward. Now, we have this in an interesting way as a uint8.
-                //MOTIVATION: create a solution where we dont require Alice to stay live and publish herself in the last hour of the timeout, but don't give Bob/watchtower colluding with Bob any ability to hurt Alice.
-                
-                //0 indicates that it is in its base state, which is to revert. (TO DO: make base form to push forward? test to see which is more common, then choose one that causes fewest on chain changeShardState calls)
-                //1 (INCLUDESTURINGINCOMPLETE only) indicates that it is in the revert state from a reveal of secret to revertHashlock
-                //2  indicates that it is in the fwd state from a reveal of secret to forwardHashlock
-                //3  indicates that whoever owns hashlock has cheated in some way. 
-                    
-                    //If INCLUDESTURINGINCOMPLETE:
-                    // Cheating determined by revealing two secrets. So, if fwd secret pubbed in (1), or revert secret in (2),
-                    //then we enter (3). This allows watchtower aid so that we don't require only Alice having publishing power to Ethereum in last hour; Bob can publish too, but if he does one thing on BTC, another on ETH, or tries to flip on ETH right at end of timeout, Alice or watchtower
-                    //can publish BTC revealed secret/he will end up slashing himself. (Note that order of Bob and Alice/Watchtower pub here is unimportant).
-                        //bug concern: Bob pubs to ETH, does nothing on BTC. Alice must publish tx_delay on BTC before Ethereum expires. Else, Bob could race case her after ETH times out in revert state and publish tx2F. However
-                            //if she pubs tx_delay, Bob can push forward ETH, and Alice can do nothing about moving BTC forward as well.
-                                //SOLUTION: we have tx_delay have three things in Bobs ScriptPK. Can be redeemed as follows. First t = 0, Bob sig + cc Alice. Second t = 1, Alice sig + secretForwardBob. Third t = 2, Bob sig. NOTE: Alice ScriptPK in this txdelay is a standard lightning ScriptPK: Bob redeem instant w cc, Alice redeem at timeout t. 
-                                    //Now, the timeouts functions so that Bob will have enough time to figure out fwd or rvrt with upstream. Then, he SHOULD publish txR, txF. This is all before tx1d becomes valid. Now, with at least 1 hr left on eth,
-                                    //tx1d becomes valid. Alice publishes this. Finally, ample enough time before t = 2, the eth contracts times out. This means if Bob pushes forward eth at last second, Alice will still have ability to slash and steal Bobs BTC funds.
-                                    //Finally, in case where Alice has a downstream, this eth timeout happens before her downstream is able to publish her own tx1d. Note that this is not protected by watchtowers, as she cant send both tx2f, tx2r to watchtowers without placing too much trust in them. 
-                                        //However, note that Alice will only have a upstream/downstream if she is routing swaps, which means she would be running a full node anyways, so there is no (minimal?) problem here.
-                                    //WATCHTOWERS: Alice is assumed to be fully offline. She publishes ETH2 on her own, and advertises to watchtowers the associated bitcoin pk. She also sends the watchtowers
-                                    //tx1delay, to publish when becomes valid if Bob has not published on BTC, as well as a signature to spend from Bob's output of the txdelay1 ScriptPK. Then, she falls offline! Trusts watchtowers to pub BTC, slash Bobs BTC if necessary, and transfer published BTC secrets
-                                    //to chain on ETH, and if Bob double reveals, to slash him on ETH. 
-                                        //TO DO: I believe that in order for Alice to send a proper sig spending from Bobs tx1delay scriptPK, it will need to be (coming from?, going to?
-                            
-                        //Q: whats stopping watchtowers from publishing any of the old msgs which have now had their CC revealed? Answer: you only send watchtower signed msg if you want that one to go to chain. Else, you just send over all cancel codes.
-
-                    //If not INCLUDESTURINGINCOMPLETE:
-                        //Originally, only the non secret owning party were able to publish in the last hour, with 2 hour timeout chunks. Imagine you go to chain with both your upstream, timeout 2 hours, and downstream, timeout 4. Your upstream has 1 hour to publish. Then, you have another hour to see this, 
-                        //publish to the appropriate chains. That leaves two hours left on your downstream, where you then have another hour to publish yourself. Finally, there is another hour for your downstream partner to publish.
-                        
-                        //I am proposing a new system. First, I propose a delay of 2 hours, 3 hours, 4 hours, 5 hours... First Person A has 1 hour to pub. Then there are 1, 2, 3, 4... hours remaining in all contracts. Person B has 1 hour to trump upstream, 1 to publish downstream. Now, 0, 1, 2, 3 hours remaining. Person 
-                        //C has 1 hour to trump upstream, 1 to pub downstream. Now 0, 0, 1, 2 left. Person D has 1 hour to trump, 1 to pub. Finally, 0, 0, 0, 1. Person E has 1 hour to trump. 
-                        
-                        //In the previous system we were requiring that only the non owning party be able to publish their funds in the last hour. This meant that if the secret owning party waited till 1 hour, 1 second left in shard and published,
-                        //no watchtower could see this in time and aid the non owning party. It required liveness on the non owning parties part to counteract the event of a last second pub. This is untenable for non node runners.
-                        //Instead, I propose this new system: up until the final hour, anyone can publish. Then, during the final hour, anyone can publish, BUT if a secret is published FOR THE FIRST TIME, the secret owning party has all of their funds slashed. 
-                        //So, secret owners can wait till last second on one chain, then publish, but this wont force state n + 1 on this chain, n on other chain. Instead, it pushes through ALL, n on the two chains. This is an acceptable state for the non owning party, and can only be brought about by malevolence by the owning party.
-                        //Furthermore, it encourages secret owners to publish to all chains, and to do so very early. If they wait until the last second on one chain with 1 hour 1 second left, good chance on the other chain the update wont get pubbed in time, and they will be slashed.
-                        // In the event that they go offline accidentally after a single chain pub, we are relying on our network of watchtowers to propagate this secret around well before the 1 hour left mark is hit. 
-                        //Flaws: 
-                            //could theoretically DoS both a user and all honest watchtowers to prevent pubs? Or concentrated effort on part of miners to censor txs so that a party gets slashed? But highly unlikely.
-                            //If a blockchain goes down, like Solana earlier this year, could cause some wonky issues, there to be timeout discrepancies between the chains. IDK how to get around this issue. 
-                            //If we are going of unix timestamp, and times given by miners suuuuper whack, could be an issue. May be smart to keep the 2, 4, 6, etc. system as before in light of this. Furthermore, if we are using a 
-                            //block based timestamp, and block times not predictable/ too fast (think first few weeks of BCH), could also present an issue. 
-    // uint blockNumberAtDisputeStart
-        //block # when dispute called, used in reference to determine when a shard times out, while storing mininal data
-
+        //0 if reverted (no hashlock revealed), 1 if pushed forward (hashlock revealed)
+       
 // msgHash:
     // keccak256(
         // Passed in msg with trailing nonce removed (deadline removed if is initial msg)
@@ -172,17 +126,24 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
     //uint160(keccak256(balanceTotalsMsg))
 
 
-//shardData: (static 67)
+//shardData: (static 70)
     //uint8 tokenIndex.  
         //Index of the token being traded on. 
     //uint8 ownerGivingOrReceiving: 0: ownerReceiving. 1: ownerGiving
         //says whether owner is giving token to partner, or whether owner receiving it from partner
     //uint amount 
         // amount being traded on
-    //uint8 shardBlockTimeoutHours
-        //again, as other timeout, represents hours. 
+    //uint32 shardTimeout 
+        //represents the unix timestamp at which time this shard will time out
     //uint hashlock
 
+
+//changed shardBlockTimeout uint8 => uint32, rel => absolute
+//shardLen 67 => 70
+//delete blockDisputeStartTimeout
+//if newMsg not sharded, then don't bother submitting old message
+//got rid of 0, 1, 2, 3 => 0, 1
+//emit both channelID and also msgHash w ending stripped off, for a 
 
 
 // msgType:
@@ -205,11 +166,6 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //     5: STARTDISPUTE
 //     6: WITHDRAW
 
-// shardState:
-//     0: INITIAL
-//     1: REVERTED
-//     2: PUSHEDFORWARD
-//     3: SLASHED
 
 
 // Messages:
@@ -218,7 +174,9 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         (variable) channelID 
 //         uint[] balances
 //             array of all the balances, given by ownerAmount, then partnerAmount, then ownerFees, then partnerFees
-//                 ownerFees represent the amount of fees the owner is paying, and partnerFees represents the amount of fees the partner is paying
+//                 ownerFees represent the total amount swapped through the channel, where owner was sender
+//                 partnerFees represent the total amount swapped through the channel, where partner was sender
+//                 NOTE: to get both of these to be fees, we need to divide them by the FEE_DENOM_TOTAL
 //             For example, if there are two tokens in the channel, this will be 2 * (4 * 32) = 256 bytes long, arranged by ownerAmount0, partnerAmount0, ownerFees1, partnerFees1.
 //             It is assumed balances in same order as tokens. Not side by side, bc balances change and channelID must be immutable. 
 //         uint deadline
@@ -296,7 +254,6 @@ library StormLib {
     
     enum ChannelFunctionTypes { ANCHOR, UPDATE, ADDFUNDSTOCHANNEL, SETTLE, SETTLESUBSET, STARTDISPUTE, WITHDRAW }
     enum MsgType { INITIAL, UNCONDITIONAL, SHARDED, SETTLE, SETTLESUBSET, UNCONDITIONALSUBSET, ADDFUNDSTOCHANNEL, SINGLECHAIN, MULTICHAIN }
-    enum ShardState { INITIAL, REVERTED, PUSHEDFORWARD, SLASHED } //BOTH TURING, NONTURING start in INITIAL. Have a distinction between initial and reverted for TURINGINCOMPLETE case, so know when secretOwner has revealed both push forward and revert.
     
     struct SwapStruct {
         uint hashlock;
@@ -340,7 +297,7 @@ library StormLib {
     IERC20 constant KALADIMES_CONTRACT = IERC20(address(0)); //TODO: make this a real contract
     address constant KALADIMES_BAL_MAP_INDEX = address(1); //constant, essentially a mapping key, to store how much Kaladime the owner has earned in yield. Cheaper to store, then call out all at once to contract rather than call transferFrom for each settle
     address constant KALADIN_ADDR = address(2); //TODO: remove 2 as placeholder. This is address that Kaladin will remove funds from, call withdraw from. 
-    uint constant LEN_SHARD = 67;
+    uint constant LEN_SHARD = 70;
     //With the current vals below, we have it work out that the fee receiver gets a bip, and Kaladin gets 1/10 of a bip. Thus, we anticipate that with fees of 1.1 bips, receiver gets 1, Kal gets 0.1. (1.1 / 11 - 0.1, as desired.)
     uint constant FEE_DENOM_KAL = 11; //is the denom for the percentage of the fees that Kaladin takes
     uint constant FEE_DENOM_TOTAL = 9090;// corresponds to 0.00011 of which 0.0001 to CP, 0.00001 to Kaladin
@@ -389,24 +346,22 @@ library StormLib {
         require(channel.exists && channel.settlementInProgress, "b");
         require(block.number > channel.disputeBlockTimeout, "c");
 
-        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1; //pointing to the first lenShard
+        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1; //pointing to the first shard
         if (MsgType(uint8(message[0])) == MsgType.SHARDED) {
-            numShards = uint8(message[shardPointer - 1]); //bc shardPointer pointing to first object after lenShard
+            numShards = uint8(message[shardPointer - 1]); //bc shardPointer pointing to first object after numShards
         }
-        
         //checks that all of the timeouts have occurred.
-        uint shardSubmittedBlock;
-        assembly { shardSubmittedBlock := calldataload(sub(add(message.offset, message.length), 32)) }
+        uint timeout;
         for (uint8 i = 0; i < numShards; i++) {
-            uint8 lenAmounts = 32 * uint8(message[shardPointer + 1 + numTokens]); //32 * numAmounts
-            uint8 shardBlockTimeoutHours = uint8(message[shardPointer + 1 + numTokens + 1 + lenAmounts + 1]); //jump over lenShard, uint8[] oGOR, numAmounts, uint[] amounts, ownerControlsHashlock to arrive at shardBlockTimeoutHours
-            ShardState shardState = ShardState(uint8(message[message.length - 32 - (numTokens - i)]));
-            if (!(shardState == ShardState.SLASHED || (shardState == ShardState.PUSHEDFORWARD && uint8(message[shardPointer + 1 + numTokens + 1 + lenAmounts + 2]) == 0))) { //jump over lenShard, uint8[] oGOR, numAmounts, uint[] amounts, ownerControlsHashlock, shardBlockTimeoutHours to arrive at updateIncludesTuringIncomplete
-                //if the shard is slashed, or the shard does not include turingIncomplete and is pushedForward, both of these states are irrevocable; nothing can be done to change them
-                //so we automatically consider those shards timed out. Now, in this is statement, we check that these conditions ARENT true. This, we need to make sure that the shard has proeprly timed out
-                require(block.number > shardSubmittedBlock + (shardBlockTimeoutHours * BLOCKS_PER_HOUR), "d");
+            uint8 shardState = uint8(message[message.length - 32 - (numTokens - i)]);
+            
+            if (shardState == 0) {
+                //means that hasn't been pushed forward, so we must wait the full time out. if has been, can't get reverted, so we can skip checking timoeut
+                
+                assembly { timeout := calldataload(add(message.offset, add(shardPointer, 6))) } //so ends at +38 into shard, which is end of shardTimeout
+                require(block.timestamp > uint(uint32(timeout)), "d"); //uint(uint32( bc need to clear away garbage that came before shardTimeout, and only examine last 4 bytes
             } 
-            shardPointer += 32 * uint8(message[shardPointer]); //jump ahead to next shard, doing 32 * lenShard
+            shardPointer += LEN_SHARD; //jump ahead to next shard
         }
     }
 
@@ -759,8 +714,8 @@ library StormLib {
             //partner is gaining funds from fees, but may owe more than they can pay, to Kaladin
             fee1 = uint(fee1 / FEE_DENOM_TOTAL); //convert fee from total sent through channel, to amount acutally needing to pay.
             fee2 = uint(fee2 / FEE_DENOM_TOTAL);
-            uint KaladinFee1 = fee1 / FEE_DENOM_KAL;
-            uint KaladinFee2 = fee2 / FEE_DENOM_KAL;
+            uint KaladinFee1 = uint(fee1 / FEE_DENOM_KAL);
+            uint KaladinFee2 = uint(fee2 / FEE_DENOM_KAL);
             uint fee2To1 = fee2 - KaladinFee2;
             uint fee1To2 = fee1 - KaladinFee1;
             uint originalBal2 = bal2;
@@ -926,14 +881,13 @@ library StormLib {
         //We have updated all of the shards. Now, we need to check whether for a given token, it will exceed the allotted balance in the channel.
         //we do this by looping over all the balances, adding how much the shards will add to these when settled, making sure no overflow when compared with the stored balanceTotals
         uint startBal = START_ADDRS + (numTokens * 20);
-        uint nonceOrDeadline = (msgType == MsgType.INITIAL) ? 32 : 4; //if Inital, we strip off a 32 byte deadline; if UNCOND, SHARD, we strip off a 4 byte nonce. Also relevant for knowing where balanceTotals start
         for (uint i = 0; i < numTokens; i++) {
             uint balanceTotal;
             uint notInShards;
             assembly {
                 let startOwnerBal := add(message.offset, add(startBal, mul(128, i)))
                 notInShards := add(calldataload(startOwnerBal), calldataload(add(startOwnerBal, 32)))
-                balanceTotal := calldataload(add(add(add(add(message.offset, startBal), mul(numTokens, 128)), nonceOrDeadline), mul(i, 32))) //starts at end of shardedMsg, right after nonce or deadline. We start at startBals, jump over all the bals, then add 32/4 to jump over the deadline/nonce.
+                balanceTotal := calldataload(sub(message.length, mul(sub(numTokens, i), 32))) //jumps to ith total in balanceTotals
             }
             balanceTotalsWithShards[i] += notInShards;
             require(balanceTotalsWithShards[i] <= balanceTotal, "l"); //TO DO: should this be strict equality?
@@ -941,31 +895,68 @@ library StormLib {
 
         //none of the shards(if sharded) + ownerPartnerBals overflowed, so we create our msg, and then keccak, store this in the contract
         if (msgType == MsgType.SHARDED) {
-            bytes memory shardDataMsg = new bytes(numShards + 32); //MAGICNUMBERNOTE: we store byte(numShards) + uint8[numShards] + uint(blockAtDisputeStart)
-            uint blockNumber = block.number;
-            assembly { mstore(add(add(shardDataMsg, 32), numTokens), blockNumber) } //add in block.number afterupdateStatus' array
-            channel.msgHash = uint(keccak256(abi.encodePacked(message[0: message.length - (numTokens * 32) - 4], shardDataMsg)));
+            setShardDataMsg(channel, message, numShards, numTokens);
         } else {
-            channel.msgHash = uint(keccak256(message[0 : message.length - (numTokens * 32) - nonceOrDeadline])); //We need everything(channelID, token splits, msg data, except for the balanceTotals and the nonce)
+            channel.msgHash = uint(keccak256(message[0 : message.length - (numTokens * 32) - ((msgType == MsgType.INITIAL) ? 32 : 4)])); //We need everything(channelID, token splits, msg data, except for the balanceTotals and the nonce)
+        }
+    }
+
+    /**
+     *Tkaes a message that is trying to trump with a sharded message, and properly sets the shardDataMsg, the calcs and sets the msgHash.
+     * If the prior message was not sharded, we set shardDataMsg to all zeros. 
+     * If prior message sharded, we need to see if any of the old shards are in this new msg, and if they are and the preimage has already been revealed, push forward this shard in the new state as well. 
+     * So, we loop over all of the oldShards. Shards can be deleted in any order, but are added in an append only fashion. 
+     * So, starting with old shard 0. Compare this with new shard 0. If equal, copy over old val of shardDataMsg to new shardDataMsg.
+        * If not equal, I argue this shard is gone. If it were further down the array, that would mean that shards were added in a non append fashion, breaking protocol. So, we look at old val 1, comparing it to new val 0.
+            *Note, we haven't gone ahead and started lookin at new val 1 yet. 
+     * We continue this until we run out of old shards or new shards. When either happens, we have guaranteed that for every old shard, if it exists in new shards, its value in shardDataMsg has been copied over. 
+    */
+    function setShardDataMsg(Channel storage channel, bytes calldata message, uint numShards, uint numTokens) private {
+        uint8[] memory shardDataMsg = new uint8[](numShards); //initialized all to 0, or false, at the start
+        if (channel.settlementInProgress) {
+            uint shardPointerNew = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1; //points at first shards in new msg
+            uint shardPointerOld = shardPointerNew + (numShards * LEN_SHARD) + 4;
+            uint numShardsOld = 0;
+            //check if old msg wasnt sharded, and if not, we can ignore it. 
+            if (MsgType(uint8(message[shardPointerOld])) == MsgType.SHARDED) { //if old msg not sharded, no sharded states to relay, can skip over below loop
+                shardPointerOld += START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1;
+                uint currIndexNew = 0;
+                numShardsOld = uint(uint8(message[shardPointerOld - 1]));
+                for (uint i = 0; i < numShardsOld; i++) {
+                    //direct bytes comparison not allowed, so we will compare the keccakd values to check whether the two shards are equal
+                    if (keccak256(message[shardPointerOld : shardPointerOld + 32]) == keccak256(message[shardPointerNew : shardPointerNew + 32])) {
+                        //these are the same shard!!
+                        shardDataMsg[currIndexNew] = uint8(message[shardPointerOld + (numShardsOld * LEN_SHARD) + i]); //take on whether or not succeeded, from old shardDataMsgArr
+                        currIndexNew += 1; //increment new to look at next shard
+                    }
+                    if (currIndexNew == numShards) { break; }
+                }
+            }
+            channel.msgHash = uint(keccak256(abi.encodePacked(message[0: START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1 + (numShards * LEN_SHARD)], shardDataMsg)));
+        } else {
+            channel.msgHash = uint(keccak256(abi.encodePacked(message[0: message.length - (numTokens * 32) - 4], shardDataMsg)));
         }
     }
 
     function disputeStartedChecks(Channel storage channel, bytes calldata message, bytes calldata signatures, uint numTokens, address owner) private returns (uint32 nonce, MsgType msgType) {
         msgType = MsgType(uint8(message[0]));
+        require(msgType == MsgType.INITIAL || msgType == MsgType.UNCONDITIONAL || msgType == MsgType.SHARDED, "p");
         address partnerAddr;
+        uint endMsg0 = START_ADDRS + (numTokens * TOKEN_PLUS_BALS_UNIT);
+        if (msgType == MsgType.SHARDED) { endMsg0 += uint(uint8(message[endMsg0])) * LEN_SHARD; } //gives the end of the first message, up to either the deadline or the nonce 
         if (msgType != MsgType.INITIAL) {
             //if is initial, we dont touch nonce, and leave it initialized to 0. Remember, INITIALS end in a deadline, not a nonce, since nonce is implicitly 0
             assembly { 
-                nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 bytes so 4 bytes for the nonce at end
+                nonce := calldataload(add(message.offset, sub(endMsg0, 28))) //-32 from end msg, + 4 bc not actually at end but is really at start nonce, so 4 - 32 = -28
                 partnerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32)))  //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes            }
             }
-            checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, partnerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.  
+            checkSignatures(message[0: endMsg0 + 4], signatures, owner, partnerAddr); //MAGICNUMBERNOTE: add 4 for nonce
             assembly { partnerAddr := calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: getting partnerAddr set correctly for check below, where we require msg.sender == partnerAddr
  
         } else {
             //is initial, so we want to check sig off of the partnerAddr, not pSignerAddr
             assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: bc end of partnerAddr sits at 28, 28 - 32 = -4
-            checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, partnerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.   
+            checkSignatures(message[0: endMsg0 + 32], signatures, owner, partnerAddr); //MAGICNUMBERNOTE: have to add 32 bc goes right up to deadline
         }
 
 
@@ -975,7 +966,6 @@ library StormLib {
             msgType = MsgType.UNCONDITIONAL;
         } //TO DO: can potentially delete this check and UNCONDITIONALSUBSET data type, bc these txs should fail in case settleSubset not yet published, since the balanceTotalsHash should not match. Will require balance checks to use strict equality though, no <=/>=
         
-        require(msgType == MsgType.INITIAL || msgType == MsgType.UNCONDITIONAL || msgType == MsgType.SHARDED, "p");
 
         if (!channel.settlementInProgress) {
             require(msg.sender == partnerAddr || msg.sender == owner, "i");//Done so that watchtowers cant startDisputes. They can only trump already started settlements.
@@ -985,6 +975,9 @@ library StormLib {
         } else {
             require(nonce > channel.nonce, "x");
             require(block.number <= channel.disputeBlockTimeout, "f"); //must submit trump w/in original disputeBlockTimeout to prevent endless trump calls. 
+            if (msgType == MsgType.SHARDED) { 
+                require(channel.msgHash == uint(keccak256(message[endMsg0 + 4 : message.length - (numTokens * 32)])), "I"); //check that correct prior message is given!
+            }
         }
 
         channel.nonce = nonce;
@@ -998,6 +991,10 @@ library StormLib {
      * startDispute can be called by owner or partner only. Done to prevent any malicious activity on the part of the watchtowers.
      */
      //Receives a {INITIAL, UNCONDITIONAL, SHARDED, UNCONDITIONALSUBSET} || balanceTotalsMsg. Stores in msgHash = {msgType with deadline(INITIAL), nonce(else) stripped out} || shardDataMsg
+     //If this message is trumping another message...
+        //If the trumping message is not sharded, then message is formatted same as above
+        //If the trumping message is sharded, then the prior msgHash msg needs to be passed in, with the proper and most recent shardDataMsg appended to it, so the message being passed is actually
+        // newMsg || oldMsg || balanceTotals
     function startDispute(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external returns(uint channelID, uint32 nonce, uint numTokens) {
         numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));     
@@ -1012,62 +1009,27 @@ library StormLib {
         
     }
 
-    function doChecksUpdateShard(mapping(uint => Channel) storage channels, bytes calldata message, uint8[] calldata shardNos) private view returns (uint channelID) {
-        require(MsgType(uint8(message[0])) == MsgType.SHARDED, "p");
-        uint numTokens = uint(uint8(message[NUM_TOKEN]));
-        channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        require(channels[channelID].exists, "u");
-        uint8 numShards = uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)]);//MAGICNUMBERNOTE: this is numShards, which is stored right at end of the ownerPartnerBals
-        for (uint i = 0; i < shardNos.length; i++) {
-            require(numShards > shardNos[i], "v");
-            if (i != 0) { require(shardNos[i] > shardNos[i - 1]); } //we enforce that shardNos are strictly increasing. Dunno if necessary
-        }
-        
-        require(channels[channelID].msgHash == uint(keccak256(message)), "B");
-    }
-
     //NOTE: dont pass in numTokens bc will stack overflow
     function changeShardStateHelper(bytes calldata message, uint8[] calldata shardNos, uint hashlockPreimage) private view returns (uint) {
         uint numTokens = uint(uint8(message[0]));
 
         uint numShards = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)]));
-        ShardState[] memory shardStatesNew = new ShardState[](numShards);
+        uint8[] memory shardStatesNew = new uint8[](numShards);
         assembly { calldatacopy(add(shardStatesNew, 32),  add(message.offset, sub(message.length, add(32, numTokens))), numShards) } //store the current shardDataMsgs in shardStatesNew
-
-        uint shardBlockTimeout;
-        assembly { shardBlockTimeout := calldataload(sub(add(message.offset, message.length), 32)) } //accesses blockAtDispute
+        uint timeout;
         for (uint i = 0; i < shardNos.length; i++) {
-            uint shardPointer = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1 + (shardNos[i] * LEN_SHARD) + 34])); //point this to proper shards tokenIndex, jumpin over tokenBalances, numShards, prior shards, and then tokenIndex, oGoR, amount
-            require(block.number <= shardBlockTimeout + uint(uint8(message[shardPointer])) * BLOCKS_PER_HOUR, "e"); //add blockAtDispute + shardblockTimeoutHours * BLOCKS_PER_HOUr
+            uint shardPointer = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1 + (shardNos[i] * LEN_SHARD) + 6])); //point this to proper shards shardTimeout, jumpin over tokenBalances, numShards, prior shards, and then+2 so read ends at 6 + 32 = 38, the end of shardTimeout
+            assembly { timeout := calldataload(add(message.offset, shardPointer)) }
+            require(block.timestamp <= uint(uint32(timeout)), "e"); //uint(uint32( bc need to clear away garbage that came before shardTimeout, and only examine last 4 bytes
             address partnerAddr;
             assembly { partnerAddr := calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: so that reads up to -4 + 32 = 28, which is where partnerAddr ends in message
-        
-            // shardMessageIndex = message.length - 32 - (numTokens - shardNos[i]);
-            // ShardState shardState = ShardState(uint8(message[shardMessageIndex]));//extract out shard state stored. is the index at which the shard is storing shardState in shardDataMsg
-        
-            if (uint8(message[shardPointer + 1]) == 1) {
-                //TO DO: this may be subject to change whether or not we even have this flag, or even a distinction between turing complete/incomplete. Currently dont.
-                // //updateIncludesTuringIncomplete
-                // shardPointer += pushForward ? 2 : 34; //point it to either start forwardHashlock, or revertHashlock
-                // uint hashlock;
-                // assembly { hashlock := calldataload(add(message.offset, shardPointer)) }
-                // require(hashlock == uint(keccak256(abi.encodePacked(hashlockPreimage))), "A");
-
-                // //slash if second reveal of a hashlock. Else, update to either pushedForward, reverted. 
-                // if ((shardState == ShardState.REVERTED && pushForward) || (shardState == ShardState.PUSHEDFORWARD && !pushForward)) {
-                //     shardStateNew = ShardState.SLASHED;
-                // } else if (shardState == ShardState.INITIAL) {
-                //     shardStateNew = pushForward ? ShardState.PUSHEDFORWARD : ShardState.REVERTED;
-                // } else {
-                //     revert('m'); //revert if trying to revert already revert, push forward already forward, or do anything with a slashed state
-                // }
-            } else {
-                //nonTuringInc. case. If shard has not been pushed forward; if hashlock given is correct, push forward. But, if less than 1 hour remaining, then slash.
-                uint hashlock;
-                assembly { hashlock := calldataload(add(message.offset, add(shardPointer, 1))) } //MAGICNUMBERNOTE: 1 is just to jump over shardBlockTimeout
-                require(hashlock == uint(keccak256(abi.encodePacked(hashlockPreimage))), "A");
-                shardStatesNew[i] = ShardState.PUSHEDFORWARD;
-            }
+            
+            //If shard has not been pushed forward; if hashlock given is correct, push forward. But, if less than 1 hour remaining, then slash.
+            uint hashlock;
+            assembly { hashlock := calldataload(add(message.offset, add(shardPointer, 1))) } //MAGICNUMBERNOTE: 1 is just to jump over shardBlockTimeout
+            require(hashlock == uint(keccak256(abi.encodePacked(hashlockPreimage))), "A");
+            shardStatesNew[shardNos[i]] = 1; //1 for pushedForward. TODO: solidity will throw an out of bounds error, correct?
+            
         }
         //construct new msg, swapping in proper value for the updated shard(s)
         return uint(keccak256(abi.encodePacked(message[0: message.length - 32 - numTokens], shardStatesNew, message[message.length - 32: message.length])));
@@ -1083,7 +1045,13 @@ library StormLib {
      //message here is the message that was stored for channel.msgHash + shardStateChangeData
      //takes in same message that is stored in msgHash in startDispute, or that has been updated and restored here in changeShardState
     function changeShardState(bytes calldata message, uint hashlockPreimage, uint8[] calldata shardNos, mapping(uint => Channel) storage channels) external returns(uint channelID) {
-        channelID = doChecksUpdateShard(channels, message, shardNos);
+        require(MsgType(uint8(message[0])) == MsgType.SHARDED, "p");
+        uint numTokens = uint(uint8(message[NUM_TOKEN]));
+        channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
+        require(channels[channelID].exists, "u");
+        require(channels[channelID].msgHash == uint(keccak256(message)), "B");
+
+        // channelID = doChecksUpdateShard(channels, message, shardNos);
         channels[channelID].msgHash = changeShardStateHelper(message, shardNos, hashlockPreimage);
     }
 
@@ -1092,55 +1060,33 @@ library StormLib {
         //we will go through and add all the shard information to shardTokenBals.
         uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1; //points now to tokenIndex of first shard.
         for (uint8 i = 0; i < numShards; i++) {
-            ShardState shardState = ShardState(uint8(message[message.length - 32 - (numShards - i)]));
+            uint8 shardState = uint8(message[message.length - 32 - (numShards - i)]);
             uint amount;
             bool ownerGiving = uint8(message[shardPointer + 1]) == 1; //jumps shardPointer over tokenIndex
             assembly { amount := calldataload(add(message.offset, add(shardPointer, 2))) } //MAGICNUMBERNOTE: jumps over tokenIndex, ownerGoR
-            if ((ownerGiving && (shardState == ShardState.REVERTED || shardState == ShardState.INITIAL)) || (!ownerGiving && shardState == ShardState.PUSHEDFORWARD)) { //} || (ownerControlsHashlock == 0 && shardState == ShardState.SLASHED)) {
+            if ((ownerGiving && shardState == 0) || (!ownerGiving && shardState == 1)) {
                 //owner was giving and the funds reverted, so owner gets them back, or owner was receiving and it was pushed through, so owner actually gets them.
                 shardTokenBals[i].ownerBal += amount;
-                if (shardState == ShardState.PUSHEDFORWARD) {
+                if (shardState == 1) {
                     shardTokenBals[i].partnerFee += amount; //partnerFee since they were the sender. Only add fees for swaps that suceeed
                 }
             } else {
                 //owner was giving and funds pushed through, so partner gets them, or partner was receiving and reverted, so partner gets them back
                 shardTokenBals[i].partnerBal += amount;
-                if (shardState == ShardState.PUSHEDFORWARD) {
+                if (shardState == 1) {
                     shardTokenBals[i].ownerFee += amount; //ownerFee since they were the sender. Only add fees for swaps that suceeed
                 }
             }
             shardPointer += LEN_SHARD;
-
-            //OLD multitoken per shard code
-            // uint8 lenAmounts = 32 * uint8(message[shardPointer + numTokens]); //32 * numAmounts
-            // uint8 ownerControlsHashlock = uint8(message[shardPointer + numTokens + 1 + lenAmounts]);//jump over oGOR, numAmounts, amounts[]
-            // uint seen = 0;
-            // for (uint j = 0; j < numTokens; j++) {
-            //     uint amount;
-            //     uint8 person = uint8(message[shardPointer]);
-            //     if (person == 1 || person == 2) { 
-            //         //this token is being traded on.
-            //         //ownerGivingOrReceiving must be 1 or 2. If {1, revert/initial} => owner. If {2, revert/initial} => partner. If {2, pushForward} => owner. If {1, pushForward} => partner. If {slashed, ownerControls} => partner. If {slashed, partnerControls => owner}
-            //         assembly { amount := calldataload(add(add(shardPointer, add(1, numTokens)), mul(seen, 32))) } //points shardPointer over uint8[], numAmounts byte, to then index into the proper amount in amounts[] 
-            //         //giveFundsToOwnerCases:
-            //         if ((person == 1 && (shardState == ShardState.REVERTED || shardState == ShardState.INITIAL)) || (person == 2 && shardState == ShardState.PUSHEDFORWARD) || (ownerControlsHashlock == 0 && shardState == ShardState.SLASHED)) {
-            //             shardTokenBals[i].ownerBal += amount;
-            //         } else {
-            //             //we don't bother checking whether this is going to partner. By process of elim, since not going to owner, must be going to partner
-            //             shardTokenBals[i].partnerBal += amount;
-            //         }
-            //     seen += 1;
-            //     }
-            //     shardPointer += 32 * uint8(message[shardPointer - 1]); //jump shardPointer to shard next lenShard byte, add 1 to get it to next oGOR
-            // }
         }
     }
 
     /**
      * Is precisely the message used in the keccak at the end of startDispute, or this same msg with modification from any successful changeShardState calls. If sharded, also has tacked onto the end the shardedDataMsg
+     * So, msg == up to nonce/deadline if unconditional, else msg == up to nonce/deadline + shardDataMsg
      */
-    function withdraw(bytes calldata message, mapping(uint => Channel) storage channels, mapping(address => FeeStruct) storage tokenAmounts) external returns (uint channelID, uint numTokens) {        
-        numTokens = uint(uint8(message[NUM_TOKEN])); 
+    function withdraw(bytes calldata message, mapping(uint => Channel) storage channels, mapping(address => FeeStruct) storage tokenAmounts) external returns (uint channelID) {        
+        uint numTokens = uint(uint8(message[NUM_TOKEN])); 
         channelID = uint(keccak256(message[1: START_ADDRS + (20 * numTokens)]));
         
         Channel storage channel = channels[channelID];    

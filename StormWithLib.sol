@@ -126,9 +126,9 @@ contract Storm {
             (uint channelID, uint32 nonce, uint numTokens) = StormLib.startDispute(message, signatures, owner, channels);
             emit StormLib.DisputeStarted(channelID, nonce, message[0: numTokens - 32]);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.WITHDRAW) {
-            (uint channelID, uint numTokens) = StormLib.withdraw(message, channels, tokenAmounts);
+            (uint channelID) = StormLib.withdraw(message, channels, tokenAmounts);
             lockCount -= 1;
-            emit StormLib.Settled(channelID, message[StormLib.START_ADDRS : StormLib.START_ADDRS + (numTokens * StormLib.TOKEN_PLUS_BALS_UNIT)]);
+            emit StormLib.Settled(channelID, message[StormLib.START_ADDRS : message.length]);
         } else { revert('D'); }
 
         //unlock and contract that calls out to IERC20, which are all but update and startdispute
@@ -142,9 +142,9 @@ contract Storm {
      * For this call to succeed, there must be a settlement on a Sharded message already in place.
      * Must still call withdraw when timeout ends. Balances are set here, but funds not yet distributed. 
      */
-    function changeShardState(bytes calldata channelIDMsg, uint hashlockPreimage, uint8[] calldata shardNos) external {
+    function changeShardState(bytes calldata message, uint hashlockPreimage, uint8[] calldata shardNos) external {
         require(reentrancyLock == 0, "a");
-        (uint channelID) = StormLib.changeShardState(channelIDMsg, hashlockPreimage, shardNos, channels);
+        (uint channelID) = StormLib.changeShardState(message, hashlockPreimage, shardNos, channels);
         emit StormLib.ShardStateChanged(channelID, shardNos, hashlockPreimage);
     }
 
