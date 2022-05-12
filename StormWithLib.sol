@@ -124,7 +124,7 @@ contract Storm {
             emit StormLib.SettledSubset(channelID, nonce, message[StormLib.START_ADDRS: message.length]);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.STARTDISPUTE) {
             (uint channelID, uint32 nonce, uint numTokens) = StormLib.startDispute(message, signatures, owner, channels);
-            emit StormLib.DisputeStarted(channelID, nonce, message[0: numTokens - 32]);
+            emit StormLib.DisputeStarted(channelID, nonce, message[0: message.length - (numTokens * 32)]);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.WITHDRAW) {
             (uint channelID) = StormLib.withdraw(message, channels, tokenAmounts);
             lockCount -= 1;
@@ -145,7 +145,7 @@ contract Storm {
     function changeShardState(bytes calldata message, uint hashlockPreimage, uint8[] calldata shardNos) external {
         require(reentrancyLock == 0, "a");
         (uint channelID) = StormLib.changeShardState(message, hashlockPreimage, shardNos, channels);
-        emit StormLib.ShardStateChanged(channelID, shardNos, hashlockPreimage);
+        emit StormLib.ShardStateChanged(channelID, channels[channelID].nonce, shardNos, hashlockPreimage);
     }
 
 }

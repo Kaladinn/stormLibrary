@@ -138,13 +138,6 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
     //uint hashlock
 
 
-//changed shardBlockTimeout uint8 => uint32, rel => absolute
-//shardLen 67 => 70
-//delete blockDisputeStartTimeout
-//if newMsg not sharded, then don't bother submitting old message
-//got rid of 0, 1, 2, 3 => 0, 1
-//emit both channelID and also msgHash w ending stripped off, for a 
-
 
 // msgType:
 //     0: Initial
@@ -246,7 +239,8 @@ library StormLib {
     event Settled(uint indexed channelID, bytes tokenBalances);
     event SettledSubset(uint indexed channelID, uint32 indexed nonce, bytes tokenBalances);
     event DisputeStarted(uint indexed channelID, uint32 indexed nonce, bytes message); //TO DO: maybe delete msgType?
-    event ShardStateChanged(uint indexed channelID, uint8[] indexed shardNos, uint preimage);
+    event ShardStatesAtDisputeStart(uint indexed channelID, uint32 indexed nonce, uint8[] shardDataMsgArr);
+    event ShardStateChanged(uint indexed channelID, uint32 indexed nonce, uint8[] indexed shardNos, uint preimage);
     event FundsAddedToChannel(uint indexed channelID, uint32 indexed nonce, bytes tokensAdded);
     event Swapped(uint indexed msgHash); //in singlechain case, means that swap has completed. In multichain, means that has been anchored
     event MultichainRedeemed(uint indexed msgHash, bool redeemed, uint hashlock); //redeemed here is a variable that says whether the propoer preimage shown to unlcok funds. If false, means that timeout occurred and funds reverted back to their sources. if redeemed, hashlock is the proper preimage used.
@@ -936,6 +930,8 @@ library StormLib {
         } else {
             channel.msgHash = uint(keccak256(abi.encodePacked(message[0: message.length - (numTokens * 32) - 4], shardDataMsg)));
         }
+        uint channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
+        emit ShardStatesAtDisputeStart(channelID, channel.nonce, shardDataMsg);
     }
 
     function disputeStartedChecks(Channel storage channel, bytes calldata message, bytes calldata signatures, uint numTokens, address owner) private returns (uint32 nonce, MsgType msgType) {
