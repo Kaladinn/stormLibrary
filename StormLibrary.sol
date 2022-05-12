@@ -287,6 +287,7 @@ library StormLib {
     uint8 constant NUM_TOKEN = 68;
     uint8 constant START_ADDRS = 79;
     uint8 constant TOKEN_PLUS_BALS_UNIT = 148; //for 20 byte addr + 64 bytes bals + 64 bytes fees
+    uint8 constant PARTNERADDR_OFFSET = 4; //gives the offset that you subtract from start of message to get the partner addr in a calldataload
     address constant NATIVE_TOKEN = address(0);
     IERC20 constant KALADIMES_CONTRACT = IERC20(address(0)); //TODO: make this a real contract
     address constant KALADIMES_BAL_MAP_INDEX = address(1); //constant, essentially a mapping key, to store how much Kaladime the owner has earned in yield. Cheaper to store, then call out all at once to contract rather than call transferFrom for each settle
@@ -421,7 +422,7 @@ library StormLib {
         assembly { assemblyVariable := calldataload(sub(message.offset, 24)) } //MAGICNUMBERNOTE: bc chainID sits at position 5-7, so -24 + 32 = 8, will have last byte as pos. 7, as desired!
         require(uint(uint24(assemblyVariable)) == block.chainid, "q"); //have to cast it to a uint24 bc thats how it is in message, to strip out all invalid data before it, then recast it to compare it to the chainid, which is a uint. 
 
-        assembly { assemblyVariable := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: bc contractAddress ends at NUM_TOKEN
+        assembly { assemblyVariable := calldataload(add(message.offset, sub(NUM_TOKEN, 52))) } //MAGICNUMBERNOTE: bc contractAddress ends at NUM_TOKEN - pSignerAddr, or NUM_TOKEN - 20
         require(address(uint160(assemblyVariable)) == address(this), "r");
 
         assembly{ assemblyVariable := calldataload(add(message.offset, sub(message.length, 32))) } //MAGICNUMBERNOTE: -32 from end bc deadline uint, at very end msg
@@ -567,7 +568,7 @@ library StormLib {
     function anchor(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels, mapping(address => FeeStruct) storage tokenAmounts) external returns (uint) {
         doAnchorChecks(message);
         address partnerAddr;
-        assembly { partnerAddr := calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: partnerAddr sits at finish at 28, and 28 - 32 = -4
+        assembly { partnerAddr := calldataload(sub(message.offset, PARTNERADDR_OFFSET)) } 
         checkSignatures(message, signatures, owner, partnerAddr);
         require(MsgType(uint8(message[0])) == MsgType.INITIAL, "p");
     
