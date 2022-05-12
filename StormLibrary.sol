@@ -285,7 +285,7 @@ library StormLib {
     //MAGIC NUMBERS
     uint constant DISPUTE_BLOCK_HOURS = 1;
     uint8 constant NUM_TOKEN = 68;
-    uint8 constant START_ADDRS = 79;
+    uint8 constant START_ADDRS = 69;
     uint8 constant TOKEN_PLUS_BALS_UNIT = 148; //for 20 byte addr + 64 bytes bals + 64 bytes fees
     uint8 constant PARTNERADDR_OFFSET = 4; //gives the offset that you subtract from start of message to get the partner addr in a calldataload
     address constant NATIVE_TOKEN = address(0);
@@ -1160,3 +1160,6 @@ library StormLib {
 // F: shardDataMsg does not equal that which is stored on chain. 
 // G: the numAmounts byte in Shard does not accurately represent the size of the amounts.
 // H: the index given in withdraw Kaladin does not align with the address pulled from the contract
+
+
+00 00000000 00002a ce8EB2ae8ACc29B257d2670D852F28270474523c fdEBb3F6FCBF6e86901DF10E3Beb6761D54cbCd7 ce8EB2ae8ACc29B257d2670D852F28270474523c 01 F96b2CFf7E588a8Bd07cEfdD8595B6573bebf753 0000000000000000000000000000000000000000000000000000000000000064 0000000000000000000000000000000000000000000000000000000000000064 0000000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000000000000 0000000000000000000000000000000000000000000000000000000001e1beca
