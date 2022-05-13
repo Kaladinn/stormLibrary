@@ -18,8 +18,8 @@ pragma solidity ^0.8.7;
 
 // import './githubFolder/ERC20.sol';
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
-import "./StormLibrary.sol";//TO DO: fix this with proper string value from github, or from actual contract usage.
-// import "https://github.com/Kaladinn/stormLibrary/blob/main/StormLibrary.sol";
+// import "./StormLibrary.sol";//TO DO: fix this with proper string value from github, or from actual contract usage.
+import "https://github.com/Kaladinn/stormLibrary/blob/main/StormLibrary.sol";
 
 
 contract Storm {
