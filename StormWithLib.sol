@@ -15,7 +15,6 @@
 */
 
 pragma solidity ^0.8.7;
-
 // import './githubFolder/ERC20.sol';
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
 // import "./StormLibrary.sol";//TO DO: fix this with proper string value from github, or from actual contract usage.
@@ -149,11 +148,3 @@ contract Storm {
     }
 
 }
-
-
-
-//TO DO: go through and check + comment all magicNumber looking numbers
-//TO DO: consolidate many of the functions that are repetitive checks in LIB.
-
-//TO DO still:
-    //Redploy/place in bin/send to sean storm, library when fully iterated on. 
