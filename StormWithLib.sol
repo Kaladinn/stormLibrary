@@ -104,11 +104,10 @@ contract Storm {
         require(reentrancyLock == 0, "a");
         //lock and contract that calls out to IERC20, which are all but update and startdispute
         if (channelFunction != StormLib.ChannelFunctionTypes.UPDATE && channelFunction != StormLib.ChannelFunctionTypes.STARTDISPUTE) { reentrancyLock = 1; }
-
         if (channelFunction == StormLib.ChannelFunctionTypes.ANCHOR) {
             uint channelID = StormLib.anchor(message, signatures, owner, channels, tokenAmounts);
             lockCount += 1;
-            emit StormLib.Anchored(channelID, message[StormLib.START_ADDRS : (message.length - 32)]);
+            emit StormLib.Anchored(channelID, message);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.UPDATE) {
             StormLib.update(message, signatures, owner, channels);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.ADDFUNDSTOCHANNEL) {

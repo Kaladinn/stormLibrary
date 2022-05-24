@@ -90,12 +90,9 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 
 
 // channelID:
-//     uint32 contractNonce:
-//         this is the nonce for the channel, which is incremented for every new channel that is entered into in the contract. 
-//         This is to prevent against a replay attack by someone who has restaked into the contract with the same tokens,
-//         otherTokens, and also the same address. Also, this needs to be kept track of in an off chain DB, for if this were an on chain variable, it would a). be more expensive. 
-//         b). could allow a party to resubmit an anchor multiple times, as the anchor would get the contractNonce added on chain, have a differnet channelID, 
-//         and would not be recognized as a repeat.
+//     uint32 blockAtAnchor:
+//         this is the block at anchor (truncated to a uint32). Done so that guaranteed each channelID is unique. All subsequent msgs will have this embedded and will sign on the message with it embedded, but since it cannot be known before publish, 
+//         the anchor msg will not be signed with this included. If starting dispute with anchor msg, care must be taken to strip out the blockAtAnchor in msg before checking sigs. Needs to be inserted so knows which channel is being referenced.
 //     uint24 chainID 
 //         (use to differentiate between two blockchains that may have naming overlap, so that is anchored into intended chain). I anticipate 2^24 is a high enough value to capture any chain we may need.
 //     address partnerAddr
@@ -235,7 +232,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
     //for shardTimeout, final hour means less than 1 hour of blocks remaining. If exactly 1 hour remaining, does not count as a slashing case (the no TuringInComplete case)
     
 library StormLib {
-    event Anchored(uint indexed channelID, bytes tokensAndVals);
+    event Anchored(uint indexed channelID, bytes message);
     event Settled(uint indexed channelID, bytes tokenBalances);
     event SettledSubset(uint indexed channelID, uint32 indexed nonce, bytes tokenBalances);
     event DisputeStarted(uint indexed channelID, uint32 indexed nonce, bytes message); //TO DO: maybe delete msgType?
@@ -368,8 +365,7 @@ library StormLib {
      * Signatures are ECDSA sigs in the form v || r || s. Also, signatures in form ownerSignature | partnerSignature.
      * Is anchor states whether we should use partnerAddr(anchoring), or pSignerAddr(everything else)
      */
-    function checkSignatures(bytes calldata message, bytes calldata signatures, address owner, address nonOwnerAddr) private pure {
-        bytes32 messageHash = keccak256(message);
+    function checkSignatures(bytes32 messageHash, bytes calldata signatures, address owner, address nonOwnerAddr) private pure {
         bytes32 r;
         bytes32 s;
         assembly {
@@ -479,7 +475,7 @@ library StormLib {
         uint deadline = doAnchorChecks(message);
         address partnerAddr;
         assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: sits at finish at 29, and 29 - 32 = -3
-        checkSignatures(message, signatures, owner, partnerAddr);
+        checkSignatures(keccak256(message), signatures, owner, partnerAddr);
         swapID = uint(keccak256(message));
         require(seenSwaps[swapID].timeout == 0, "C");
 
@@ -569,14 +565,14 @@ library StormLib {
         doAnchorChecks(message);
         address partnerAddr;
         assembly { partnerAddr := calldataload(sub(message.offset, PARTNERADDR_OFFSET)) } 
-        checkSignatures(message, signatures, owner, partnerAddr);
+        checkSignatures(keccak256(message), signatures, owner, partnerAddr);
         require(MsgType(uint8(message[0])) == MsgType.INITIAL, "p");
     
         uint numTokens = uint(uint8(message[NUM_TOKEN])); //otherwise, when multiplying, will overflow
         
-        uint channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
+        uint channelID = uint(keccak256(abi.encodePacked(uint32(block.number), message[1: START_ADDRS + (numTokens * 20)]))); //calcs channelID, inserting the block number in front. 
         require(!channels[channelID].exists, "s");
-        
+
         uint160 balanceTotalsHash = lockTokens(message[START_ADDRS : START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)], numTokens, partnerAddr, tokenAmounts);
         Channel storage channel = channels[channelID];
         channel.exists = true;
@@ -600,12 +596,11 @@ library StormLib {
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
         uint channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
         Channel storage channel = channels[channelID];
         require(channel.exists, "u");
         require(!channel.settlementInProgress, "w");//User should just call startDispute instead.
-        
         require(channel.balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
 
         uint _ownerBalance;
@@ -624,6 +619,7 @@ library StormLib {
         //All looks good! Update nonce(the only thing we actually update)
         uint32 nonce;
         assembly { nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) } //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 for the nonce
+        require(channel.nonce < nonce, "x");
         channel.nonce = nonce;
     } 
 
@@ -674,7 +670,7 @@ library StormLib {
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
         channelID = uint(keccak256(message[1: START_ADDRS + (uint(uint8(message[NUM_TOKEN])) * 20)]));  
         Channel storage channel = channels[channelID];
         require(channel.exists, "u");
@@ -820,7 +816,7 @@ library StormLib {
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
      
         require(channels[channelID].exists, "u");
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
@@ -839,7 +835,7 @@ library StormLib {
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
-        checkSignatures(message[0: message.length - (32 * numTokens)], signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
         require(channels[channelID].exists, "u"); 
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
         require(!channels[channelID].settlementInProgress, "w"); //Cant distribute if settling; don't know which direction to shove the shards.
@@ -852,16 +848,13 @@ library StormLib {
     }
 
      
-
     /** 
      */
     function updateShards(Channel storage channel, bytes calldata message, MsgType msgType, uint numTokens) private {
         //check that startDispute is valid. TO DO: check all of these operations, esp assembly, for overflow
-        
         uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens); //points to byte for numShards
         uint8 numShards = (msgType == MsgType.SHARDED) ? uint8(message[shardPointer]) : 0; 
-
-        shardPointer += 1; //point to first tokenIndex
+        shardPointer += 1; //point to first shards tokenIndex
         uint[] memory balanceTotalsWithShards = new uint[](numTokens);
         for (uint8 i = 0; i < numShards; i++) { 
             //looping over ownerGivingOrReceivingFirst in shard in shardData
@@ -871,8 +864,6 @@ library StormLib {
             //looped over amounts in the shard, now lets increment the shardPointer to jump and point to the next shard
             shardPointer += LEN_SHARD; //use LEN_SHARD to jump ahead to next shards tokenIndex
         }
-            
-        
         //We have updated all of the shards. Now, we need to check whether for a given token, it will exceed the allotted balance in the channel.
         //we do this by looping over all the balances, adding how much the shards will add to these when settled, making sure no overflow when compared with the stored balanceTotals
         uint startBal = START_ADDRS + (numTokens * 20);
@@ -887,7 +878,6 @@ library StormLib {
             balanceTotalsWithShards[i] += notInShards;
             require(balanceTotalsWithShards[i] <= balanceTotal, "l"); //TO DO: should this be strict equality?
         }
-
         //none of the shards(if sharded) + ownerPartnerBals overflowed, so we create our msg, and then keccak, store this in the contract
         if (msgType == MsgType.SHARDED) {
             setShardDataMsg(channel, message, numShards, numTokens);
@@ -939,31 +929,29 @@ library StormLib {
         msgType = MsgType(uint8(message[0]));
         require(msgType == MsgType.INITIAL || msgType == MsgType.UNCONDITIONAL || msgType == MsgType.SHARDED, "p");
         address partnerAddr;
-        uint endMsg0 = START_ADDRS + (numTokens * TOKEN_PLUS_BALS_UNIT);
-        if (msgType == MsgType.SHARDED) { endMsg0 += uint(uint8(message[endMsg0])) * LEN_SHARD; } //gives the end of the first message, up to either the deadline or the nonce 
+        uint endMsg0 = START_ADDRS + (numTokens * TOKEN_PLUS_BALS_UNIT); //gives the end of the first message, up to either the deadline or the nonce. If sharded, line below will skip over shards
+        if (msgType == MsgType.SHARDED) { endMsg0 += uint(uint8(message[endMsg0])) * LEN_SHARD; } 
         if (msgType != MsgType.INITIAL) {
             //if is initial, we dont touch nonce, and leave it initialized to 0. Remember, INITIALS end in a deadline, not a nonce, since nonce is implicitly 0
             assembly { 
                 nonce := calldataload(add(message.offset, sub(endMsg0, 28))) //-32 from end msg, + 4 bc not actually at end but is really at start nonce, so 4 - 32 = -28
                 partnerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32)))  //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes            }
             }
-            checkSignatures(message[0: endMsg0 + 4], signatures, owner, partnerAddr); //MAGICNUMBERNOTE: add 4 for nonce
+            checkSignatures(keccak256(message[0: endMsg0 + 4]), signatures, owner, partnerAddr); //MAGICNUMBERNOTE: add 4 for nonce
             assembly { partnerAddr := calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: getting partnerAddr set correctly for check below, where we require msg.sender == partnerAddr
  
         } else {
             //is initial, so we want to check sig off of the partnerAddr, not pSignerAddr
             assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: bc end of partnerAddr sits at 28, 28 - 32 = -4
-            checkSignatures(message[0: endMsg0 + 32], signatures, owner, partnerAddr); //MAGICNUMBERNOTE: have to add 32 bc goes right up to deadline
+            checkSignatures(keccak256(abi.encodePacked(message[0: 1], message[5: endMsg0 + 32])), signatures, owner, partnerAddr); //MAGICNUMBERNOTE: have to add 32 bc goes right up to deadline. DO this funky abi.encodePacked bc signature for anchor msg does not include blockAtAnchor, so we must strip it out. 
         }
 
-
-         //if after a subset settle, ensure that subset settle has been published
+        //if after a subset settle, ensure that subset settle has been published
         if (msgType == MsgType.UNCONDITIONALSUBSET) {
             require(nonce == channel.nonce + 1, "x");
             msgType = MsgType.UNCONDITIONAL;
         } //TO DO: can potentially delete this check and UNCONDITIONALSUBSET data type, bc these txs should fail in case settleSubset not yet published, since the balanceTotalsHash should not match. Will require balance checks to use strict equality though, no <=/>=
         
-
         if (!channel.settlementInProgress) {
             require(msg.sender == partnerAddr || msg.sender == owner, "i");//Done so that watchtowers cant startDisputes. They can only trump already started settlements.
             require(nonce >= channel.nonce, "x"); //>= includes equals for case where starting settlement with a message that was used in a update() call already. Note shards cannot be used in update(), so shards will always be >. Didn't include this separately since checking >= is the same as checking >, for if not settling no way sharded nonce could have already been seen
@@ -976,7 +964,6 @@ library StormLib {
                 require(channel.msgHash == uint(keccak256(message[endMsg0 + 4 : message.length - (numTokens * 32)])), "I"); //check that correct prior message is given!
             }
         }
-
         channel.nonce = nonce;
     }
 
@@ -989,8 +976,8 @@ library StormLib {
      */
      //Receives a {INITIAL, UNCONDITIONAL, SHARDED, UNCONDITIONALSUBSET} || balanceTotalsMsg. Stores in msgHash = {msgType with deadline(INITIAL), nonce(else) stripped out} || shardDataMsg
      //If this message is trumping another message...
-        //If the trumping message is not sharded, then message is formatted same as above
-        //If the trumping message is sharded, then the prior msgHash msg needs to be passed in, with the proper and most recent shardDataMsg appended to it, so the message being passed is actually
+        //If the new message is not sharded, then message is formatted same as above
+        //If the new message is sharded, then the prior msgHash msg needs to be passed in, with the proper and most recent shardDataMsg appended to it, so the message being passed is actually
         // newMsg || oldMsg || balanceTotals
     function startDispute(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external returns(uint channelID, uint32 nonce, uint numTokens) {
         numTokens = uint(uint8(message[NUM_TOKEN]));
