@@ -162,7 +162,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //     Initial
 //         byte msgType
 //         (variable) channelID 
-//         uint[] balances
+//         BalanceStruct[] balances
 //             array of all the balances, given by ownerAmount, then partnerAmount, then ownerFees, then partnerFees
 //                 ownerFees represent the total amount swapped through the channel, where owner was sender
 //                 partnerFees represent the total amount swapped through the channel, where partner was sender
@@ -174,12 +174,12 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //     Unconditional
 //         byte msgType
 //         (variable) channelID 
-//         uint[] balances
+//         BalanceStruct[] balances
 //         uint32 nonce
 //     Sharded
 //         byte msgType
 //         (variable) channelID
-//         uint[] balances
+//         BalanceStruct[] balances
 //         byte numShards
 //             represents how many shards are attached to this Shard Msg
 //         shardData[] shards
@@ -188,11 +188,11 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //     Settle
 //         byte msgType
 //         (variable) channelID 
-//         uint[] balances (length: numTokens * 2 * 32)
+//         BalanceStruct[] balances (length: numTokens * 2 * 32)
 //     SettleSubset
 //         byte msgType
 //         (variable) channelID 
-//         uint[] balances
+//         BalanceStruct[] balances
 //         bool[] closeOutTokens
 //         uint32 nonce
 //     UnconditionalSubset
@@ -201,7 +201,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //     AddFundsToChannel
 //         byte msgType
 //         (variable) channelID 
-//         uint[] fundsToAdd
+//         (uint, uint)[] fundsToAdd
 //         nonce 
 //     SingleChain
 //         byte msgType
@@ -671,6 +671,9 @@ library StormLib {
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
         checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        //check that sender of msg is partner, so we know partner has a double sig they could go to chain with for the UncondiitonalMessage after the addFunds msg
+        assembly { pSignerAddr:= calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: -4 bc ends at 28, 28 - 32 = -4
+        require(msg.sender == pSignerAddr, "I");
         channelID = uint(keccak256(message[1: START_ADDRS + (uint(uint8(message[NUM_TOKEN])) * 20)]));  
         Channel storage channel = channels[channelID];
         require(channel.exists, "u");
@@ -772,31 +775,31 @@ library StormLib {
     }
 
     //helper that distributes the funds, used by settle and settlesubset
-    function distributeSettleTokens(bytes calldata message, uint numTokens, mapping(address => FeeStruct) storage tokenAmounts, bool finalNotSubset) private returns (uint160) {
+    function distributeSettleTokens(bytes calldata message, uint numTokens, mapping(address => FeeStruct) storage tokenAmounts, bool isSettleSubset) private returns (uint160) {
         address partnerAddr;
         assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: -4 bc ends at 28, 28 - 32 = -4
         uint totalKLD;
-        uint[] memory balanceTotalsNew = new uint[]((finalNotSubset ? 0 : numTokens)); //TO DO: make sure this costs no gas if in finalNotSubset case
+        uint[] memory balanceTotalsNew = new uint[]((isSettleSubset ? numTokens : 0)); //TO DO: make sure this costs no gas if in ! isSettleSubset case
         for (uint i = 0; i < numTokens; i++) {
             uint balanceTotal;
             assembly { balanceTotal := calldataload(add(add(add(message.offset, START_ADDRS), mul(numTokens, TOKEN_PLUS_BALS_UNIT)), mul(i, 32))) } 
-            if (balanceTotal != 0 && (finalNotSubset || (uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + i]) == 1))) {
+            if (balanceTotal != 0 && (!isSettleSubset || (uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + i]) == 1))) {
                 //should settle this token. Either bc nonempty and settle, or nonempty and subsetSettle with flag set
                 BalanceStruct memory balanceStruct;
                 address tokenAddress = calcBalsAndFees(message, balanceStruct, balanceTotal, partnerAddr, i);
                 totalKLD += balanceStruct.ownerFee;
                 tokenAmounts[tokenAddress].ownerBal += balanceStruct.ownerBal;
                 tokenAmounts[tokenAddress].KaladinBal += (balanceStruct.ownerFee + balanceStruct.partnerFee);
-                if (!finalNotSubset) {
+                if (isSettleSubset) {
                     //is subset, so we want to track the new balanceTotals
                     balanceTotalsNew[i] = 0;
                 }
             }  
-            else if (!finalNotSubset) {
+            else if (isSettleSubset) {
                 //is subset, but we aren't settling this token, so we just keep it the same as before
                 balanceTotalsNew[i] == balanceTotal;
             }  
-            //NOTE: in case where balanceTotal == 0 and !finalNotSubset, then we dont set the balanceTotalsNew[i]. This is okay, as balanceTotalsNew defaults to 0. 
+            //NOTE: in case where balanceTotal == 0 and isSettleSubset, then we dont set the balanceTotalsNew[i]. This is okay, as balanceTotalsNew defaults to 0. 
         }
         tokenAmounts[KALADIMES_BAL_MAP_INDEX].ownerBal += totalKLD;
         return uint160(bytes20(abi.encodePacked(balanceTotalsNew)));
@@ -836,6 +839,10 @@ library StormLib {
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
         checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        //check that sender of msg is partner, so we know partner has a double sig they could go to chain with for the UncondiitonalSubsetMessage after the SettleSubset msg is published
+        assembly { pSignerAddr:= calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: -4 bc ends at 28, 28 - 32 = -4
+        require(msg.sender == pSignerAddr, "I");
+    
         require(channels[channelID].exists, "u"); 
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
         require(!channels[channelID].settlementInProgress, "w"); //Cant distribute if settling; don't know which direction to shove the shards.
@@ -1147,3 +1154,4 @@ library StormLib {
 // F: shardDataMsg does not equal that which is stored on chain. 
 // G: the numAmounts byte in Shard does not accurately represent the size of the amounts.
 // H: the index given in withdraw Kaladin does not align with the address pulled from the contract
+// I: only partner can publish
