@@ -142,10 +142,9 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //     2: Sharded
 //     3: Settle
 //     4: SettleSubset
-//     5: UnconditionalSubset
-//     6: AddFundsToChannel
-//     7: SingleChain
-//     8: Multichain
+//     5: AddFundsToChannel
+//     6: SingleChain
+//     7: Multichain
 
 // channelFunctionType:
 //     0: ANCHOR
@@ -195,9 +194,6 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         BalanceStruct[] balances
 //         bool[] closeOutTokens
 //         uint32 nonce
-//     UnconditionalSubset
-//         This message is exactly the same as an Unconditional except it requires that the on chain stored nonce == msg nonce - 1.
-//         This is done to ensure that one party cannot publish the new tx, with a portion of the funds missing (bc presumedly settled) b4 a party can actually submit the settleSubset msg.
 //     AddFundsToChannel
 //         byte msgType
 //         (variable) channelID 
@@ -244,7 +240,7 @@ library StormLib {
 
     
     enum ChannelFunctionTypes { ANCHOR, UPDATE, ADDFUNDSTOCHANNEL, SETTLE, SETTLESUBSET, STARTDISPUTE, WITHDRAW }
-    enum MsgType { INITIAL, UNCONDITIONAL, SHARDED, SETTLE, SETTLESUBSET, UNCONDITIONALSUBSET, ADDFUNDSTOCHANNEL, SINGLECHAIN, MULTICHAIN }
+    enum MsgType { INITIAL, UNCONDITIONAL, SHARDED, SETTLE, SETTLESUBSET, ADDFUNDSTOCHANNEL, SINGLECHAIN, MULTICHAIN }
     
     struct SwapStruct {
         uint hashlock;
@@ -613,7 +609,7 @@ library StormLib {
                 _partnerBalance := calldataload(add(add(startBals, 32), mul(i, 128)))
                 balanceTotal := calldataload(add(add(startBals, mul(numTokens, 128)), mul(i, 32)))
             }
-            require(_ownerBalance + _partnerBalance <= balanceTotal, "l");  //TO DO: should that be a strict equality?
+            require(_ownerBalance + _partnerBalance == balanceTotal, "l");
         }
         
         //All looks good! Update nonce(the only thing we actually update)
@@ -748,7 +744,7 @@ library StormLib {
         if (isSettle) {
             uint numTokens = uint(uint8(message[NUM_TOKEN]));
             assembly { calldatacopy(add(balanceStruct, 32), add(add(add(message.offset, START_ADDRS), mul(numTokens, 20)), mul(i, 128)), 128) }
-            require(balanceTotal >= balanceStruct.ownerBal + balanceStruct.partnerBal, "l"); //TO DO: should this be strict equality??
+            require(balanceStruct.ownerBal + balanceStruct.partnerBal == balanceTotal, "l");
         }
         assembly { tokenAddress := calldataload(add(add(message.offset, sub(START_ADDRS, 12)), mul(i, 20))) }
     
@@ -851,7 +847,7 @@ library StormLib {
         require(nonce > channels[channelID].nonce, "x");
 
         channels[channelID].balanceTotalsHash = distributeSettleTokens(message, numTokens, tokenAmounts, false);
-        channels[channelID].nonce = nonce; //Enables the UnconditionalSubset msg to now be spent
+        channels[channelID].nonce = nonce;
     }
 
      
@@ -883,7 +879,7 @@ library StormLib {
                 balanceTotal := calldataload(sub(message.length, mul(sub(numTokens, i), 32))) //jumps to ith total in balanceTotals
             }
             balanceTotalsWithShards[i] += notInShards;
-            require(balanceTotalsWithShards[i] <= balanceTotal, "l"); //TO DO: should this be strict equality?
+            require(balanceTotalsWithShards[i] == balanceTotal, "l");
         }
         //none of the shards(if sharded) + ownerPartnerBals overflowed, so we create our msg, and then keccak, store this in the contract
         if (msgType == MsgType.SHARDED) {
@@ -953,12 +949,6 @@ library StormLib {
             checkSignatures(keccak256(abi.encodePacked(message[0: 1], message[5: endMsg0 + 32])), signatures, owner, partnerAddr); //MAGICNUMBERNOTE: have to add 32 bc goes right up to deadline. DO this funky abi.encodePacked bc signature for anchor msg does not include blockAtAnchor, so we must strip it out. 
         }
 
-        //if after a subset settle, ensure that subset settle has been published
-        if (msgType == MsgType.UNCONDITIONALSUBSET) {
-            require(nonce == channel.nonce + 1, "x");
-            msgType = MsgType.UNCONDITIONAL;
-        } //TO DO: can potentially delete this check and UNCONDITIONALSUBSET data type, bc these txs should fail in case settleSubset not yet published, since the balanceTotalsHash should not match. Will require balance checks to use strict equality though, no <=/>=
-        
         if (!channel.settlementInProgress) {
             require(msg.sender == partnerAddr || msg.sender == owner, "i");//Done so that watchtowers cant startDisputes. They can only trump already started settlements.
             require(nonce >= channel.nonce, "x"); //>= includes equals for case where starting settlement with a message that was used in a update() call already. Note shards cannot be used in update(), so shards will always be >. Didn't include this separately since checking >= is the same as checking >, for if not settling no way sharded nonce could have already been seen
@@ -981,7 +971,7 @@ library StormLib {
      * Sharded messages will only succeed if nonce is higher, and will reset the timeout to what is passed in. Can be called after a settlement has started. 
      * startDispute can be called by owner or partner only. Done to prevent any malicious activity on the part of the watchtowers.
      */
-     //Receives a {INITIAL, UNCONDITIONAL, SHARDED, UNCONDITIONALSUBSET} || balanceTotalsMsg. Stores in msgHash = {msgType with deadline(INITIAL), nonce(else) stripped out} || shardDataMsg
+     //Receives a {INITIAL, UNCONDITIONAL, SHARDED} || balanceTotalsMsg. Stores in msgHash = {msgType with deadline(INITIAL), nonce(else) stripped out} || shardDataMsg
      //If this message is trumping another message...
         //If the new message is not sharded, then message is formatted same as above
         //If the new message is sharded, then the prior msgHash msg needs to be passed in, with the proper and most recent shardDataMsg appended to it, so the message being passed is actually
