@@ -345,7 +345,6 @@ library StormLib {
             
             if (shardState == 0) {
                 //means that hasn't been pushed forward, so we must wait the full time out. if has been, can't get reverted, so we can skip checking timoeut
-                
                 assembly { timeout := calldataload(add(message.offset, add(shardPointer, 6))) } //so ends at +38 into shard, which is end of shardTimeout
                 require(block.timestamp > uint(uint32(timeout)), "d"); //uint(uint32( bc need to clear away garbage that came before shardTimeout, and only examine last 4 bytes
             } 
@@ -835,12 +834,13 @@ library StormLib {
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
         checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        require(channels[channelID].exists, "u"); 
+        require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
+        
         //check that sender of msg is partner, so we know partner has a double sig they could go to chain with for the UncondiitonalSubsetMessage after the SettleSubset msg is published
         assembly { pSignerAddr:= calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: -4 bc ends at 28, 28 - 32 = -4
         require(msg.sender == pSignerAddr, "I");
     
-        require(channels[channelID].exists, "u"); 
-        require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
         require(!channels[channelID].settlementInProgress, "w"); //Cant distribute if settling; don't know which direction to shove the shards.
         
         assembly { nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) } //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 for the nonce
