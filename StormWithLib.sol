@@ -68,29 +68,29 @@ contract Storm {
     }
 
     
-    //NOTE: in multichain, chain on which secret holder is receiving funds must have both a shorter timeout anddd a shorter deadline, where intrachain deadline must also be shorter than timeout.
-        //the reason for this is that we don't want secretholder to delay publishing msg on chain where they are receiving to last second, then publish and leave other chains deadline expired, essentially stealing funds.
-        //furthermore, lets say both are pubbed at same time, we want the redeem period to be shorter on the receiving chain, so nonsecretholder always has time to redeem on their chain. Finally, we need that the timeout is always longer than
-        //the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed. This is partial as is because we store the timeout in the struct that is stored in seenMsgs,
-        //and this struct cant be deleted till timeout has expired
-    //NOTE: if reverted, then entryToDeleteOrPreimage should be zero, to save calldata costs and also emit event costs. 
-    function singleswap(bytes calldata message, bytes calldata signatures, uint entryToDeleteOrPreimage) external payable {
-        require(reentrancyLock == 0, "a");
-        reentrancyLock = 1;
+    // //NOTE: in multichain, chain on which secret holder is receiving funds must have both a shorter timeout anddd a shorter deadline, where intrachain deadline must also be shorter than timeout.
+    //     //the reason for this is that we don't want secretholder to delay publishing msg on chain where they are receiving to last second, then publish and leave other chains deadline expired, essentially stealing funds.
+    //     //furthermore, lets say both are pubbed at same time, we want the redeem period to be shorter on the receiving chain, so nonsecretholder always has time to redeem on their chain. Finally, we need that the timeout is always longer than
+    //     //the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed. This is partial as is because we store the timeout in the struct that is stored in seenMsgs,
+    //     //and this struct cant be deleted till timeout has expired
+    // //NOTE: if reverted, then entryToDeleteOrPreimage should be zero, to save calldata costs and also emit event costs. 
+    // function singleswap(bytes calldata message, bytes calldata signatures, uint entryToDeleteOrPreimage) external payable {
+    //     require(reentrancyLock == 0, "a");
+    //     reentrancyLock = 1;
 
-        if (signatures.length != 0) {
-            //signatures.length is our simple way of indicating that this is a singleswapRedeem. Could separate into two functions, but we save gas this way w only 1 func. Too bad sol. doesn't support optional params
-            //this is singleswapStake. entryToDeleteOrPreimage acting as entryToDelete
-            uint swapID = StormLib.singleswapStake(message, signatures, entryToDeleteOrPreimage, owner, tokenAmounts, seenSwaps);
-            emit StormLib.Swapped(swapID);
-        } else {
-            //entryToDeleteOrPreimage operating as preimage now
-            (uint swapID, bool redeemed) = StormLib.singleswapRedeem(message, entryToDeleteOrPreimage, tokenAmounts, seenSwaps);
-            emit StormLib.MultichainRedeemed(swapID, redeemed, entryToDeleteOrPreimage); 
-        }
-        lockCount += 1;
-        reentrancyLock = 0;
-    }
+    //     if (signatures.length != 0) {
+    //         //signatures.length is our simple way of indicating that this is a singleswapRedeem. Could separate into two functions, but we save gas this way w only 1 func. Too bad sol. doesn't support optional params
+    //         //this is singleswapStake. entryToDeleteOrPreimage acting as entryToDelete
+    //         uint swapID = StormLib.singleswapStake(message, signatures, entryToDeleteOrPreimage, owner, tokenAmounts, seenSwaps);
+    //         emit StormLib.Swapped(swapID);
+    //     } else {
+    //         //entryToDeleteOrPreimage operating as preimage now
+    //         (uint swapID, bool redeemed) = StormLib.singleswapRedeem(message, entryToDeleteOrPreimage, tokenAmounts, seenSwaps);
+    //         emit StormLib.MultichainRedeemed(swapID, redeemed, entryToDeleteOrPreimage); 
+    //     }
+    //     lockCount += 1;
+    //     reentrancyLock = 0;
+    // }
 
 
     //Fns that take in balanceTotalsHash unhashed string balanceTotals:
