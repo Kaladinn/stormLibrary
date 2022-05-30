@@ -107,7 +107,7 @@ contract Storm {
         if (channelFunction == StormLib.ChannelFunctionTypes.ANCHOR) {
             uint channelID = StormLib.anchor(message, signatures, owner, channels, tokenAmounts);
             lockCount += 1;
-            emit StormLib.Anchored(channelID, abi.encodePacked(message, signatures[65:130]));
+            emit StormLib.Anchored(channelID, message, signatures[65:130]);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.UPDATE) {
             StormLib.update(message, signatures, owner, channels);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.ADDFUNDSTOCHANNEL) {

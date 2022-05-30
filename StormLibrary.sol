@@ -212,7 +212,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         uint deadline
 //     MultiChain
 //         byte msgType
-//         3 bytes zeros (padding) //done so that complies with anchor format, doAnchorChecks can be reused on this
+//         3 bytes zeros (padding) //done so that complies with anchor format, doAnchorChecks can be reused on this. TODO: fix this
 //         bool owner/partnerFlag. 00 if owner is providing the funds, 01 if partner providing
 //         uint8 blockHourTimeout
 //         uint24 chainID
@@ -228,10 +228,10 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
     //for shardTimeout, final hour means less than 1 hour of blocks remaining. If exactly 1 hour remaining, does not count as a slashing case (the no TuringInComplete case)
     
 library StormLib {
-    event Anchored(uint indexed channelID, bytes message);
+    event Anchored(uint indexed channelID, bytes message, bytes partnerSig);
     event Settled(uint indexed channelID, bytes tokenBalances);
     event SettledSubset(uint indexed channelID, uint32 indexed nonce, bytes tokenBalances);
-    event DisputeStarted(uint indexed channelID, uint32 indexed nonce, bytes message); //TO DO: maybe delete msgType?
+    event DisputeStarted(uint indexed channelID, uint32 indexed nonce, bytes message);
     event ShardStatesAtDisputeStart(uint indexed channelID, uint32 indexed nonce, uint8[] shardDataMsgArr);
     event ShardStateChanged(uint indexed channelID, uint32 indexed nonce, uint8[] indexed shardNos, uint preimage);
     event FundsAddedToChannel(uint indexed channelID, uint32 indexed nonce, bytes tokensAdded);
@@ -410,7 +410,7 @@ library StormLib {
 
     function doAnchorChecks(bytes calldata message) private view returns (uint) {
         uint assemblyVariable; //first is chainID, then is contractAddress, then finally deadline
-        assembly { assemblyVariable := calldataload(sub(message.offset, 24)) } //MAGICNUMBERNOTE: bc chainID sits at position 5-7, so -24 + 32 = 8, will have last byte as pos. 7, as desired!
+        assembly { assemblyVariable := calldataload(sub(message.offset, 24)) } //MAGICNUMBERNOTE: chainID  at 5-7,  so -24 + 32 = 8, will have last byte as pos. 7, as desired!
         require(uint(uint24(assemblyVariable)) == block.chainid, "q"); //have to cast it to a uint24 bc thats how it is in message, to strip out all invalid data before it, then recast it to compare it to the chainid, which is a uint. 
 
         assembly { assemblyVariable := calldataload(add(message.offset, sub(NUM_TOKEN, 52))) } //MAGICNUMBERNOTE: bc contractAddress ends at NUM_TOKEN - pSignerAddr, or NUM_TOKEN - 20
@@ -421,133 +421,133 @@ library StormLib {
         return assemblyVariable;
     }
 
-    //Goes through, and transfer into the contract the necessary funds
-    function processFundsSingleswap(bytes calldata message, uint8 person, bool singleChain, address partnerAddr, mapping(address => FeeStruct) storage tokenAmounts) private {
-        //process funds
-        uint ownerAmount;
-        uint partnerAmount;
-        address addr;
-        assembly { 
-            addr := calldataload(add(message.offset, 37))//MAGICNUMBERNOTE: fetching ownerToken, which sits at 37 + 32 = 69
-            ownerAmount := calldataload(add(message.offset, 89))//MAGICNUMBERNOTE: fetching ownerAmount, which starts at 89, uint
-        }
-        if (person == 0 || singleChain) {
-            //these are funds owner is providing
-            tokenAmounts[addr].ownerBal -= ownerAmount;
-            if (singleChain) {
-                //distribute funds instantly
-                if (addr == NATIVE_TOKEN) {
-                    //is native token
-                    payable(partnerAddr).transfer(ownerAmount);
-                } else {
-                    bool success = IERC20(addr).transfer(partnerAddr, ownerAmount);
-                    require(success, "j");
-                }
-            }
-        } else if (person == 1 || singleChain) {
-            //these are funds partner is providing
-            if (singleChain) {
-                //get new funds amount to reflect the partner funds
-                assembly {
-                    addr := calldataload(add(message.offset, 57))//MAGICNUMBERNOTE: fetching partnerToken, which sits at 57 + 32 = 89
-                    partnerAmount := calldataload(add(message.offset, 121))//MAGICNUMBERNOTE: fetching partnerAmount, which starts at 121, uint
-                }
-                tokenAmounts[addr].ownerBal += partnerAmount;
-            }
-            if (addr == NATIVE_TOKEN) {
-                require(msg.value == partnerAmount, "k");
-            } else {
-                bool success = IERC20(addr).transferFrom(partnerAddr, address(this), partnerAmount);
-                require(success, "j");
-            }
-        }
-    }
+    // //Goes through, and transfer into the contract the necessary funds
+    // function processFundsSingleswap(bytes calldata message, uint8 person, bool singleChain, address partnerAddr, mapping(address => FeeStruct) storage tokenAmounts) private {
+    //     //process funds
+    //     uint ownerAmount;
+    //     uint partnerAmount;
+    //     address addr;
+    //     assembly { 
+    //         addr := calldataload(add(message.offset, 37))//MAGICNUMBERNOTE: fetching ownerToken, which sits at 37 + 32 = 69
+    //         ownerAmount := calldataload(add(message.offset, 89))//MAGICNUMBERNOTE: fetching ownerAmount, which starts at 89, uint
+    //     }
+    //     if (person == 0 || singleChain) {
+    //         //these are funds owner is providing
+    //         tokenAmounts[addr].ownerBal -= ownerAmount;
+    //         if (singleChain) {
+    //             //distribute funds instantly
+    //             if (addr == NATIVE_TOKEN) {
+    //                 //is native token
+    //                 payable(partnerAddr).transfer(ownerAmount);
+    //             } else {
+    //                 bool success = IERC20(addr).transfer(partnerAddr, ownerAmount);
+    //                 require(success, "j");
+    //             }
+    //         }
+    //     } else if (person == 1 || singleChain) {
+    //         //these are funds partner is providing
+    //         if (singleChain) {
+    //             //get new funds amount to reflect the partner funds
+    //             assembly {
+    //                 addr := calldataload(add(message.offset, 57))//MAGICNUMBERNOTE: fetching partnerToken, which sits at 57 + 32 = 89
+    //                 partnerAmount := calldataload(add(message.offset, 121))//MAGICNUMBERNOTE: fetching partnerAmount, which starts at 121, uint
+    //             }
+    //             tokenAmounts[addr].ownerBal += partnerAmount;
+    //         }
+    //         if (addr == NATIVE_TOKEN) {
+    //             require(msg.value == partnerAmount, "k");
+    //         } else {
+    //             bool success = IERC20(addr).transferFrom(partnerAddr, address(this), partnerAmount);
+    //             require(success, "j");
+    //         }
+    //     }
+    // }
     
-    //NOTE: in multichain, chain on which secret holder is receiving funds must have both a shorter timeout than other chain. 
-        //the reason for this is that we don't want secretholder to delay redeeming msg on chain where they are receiving to last second, then not leave nonsecretholder enough time to redeem on ther own chain. 
-        //Secondly, we need that the timeout is always longer than the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed.
-    function singleswapStake(bytes calldata message, bytes calldata signatures, uint entryToDelete, address owner, mapping(address => FeeStruct) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID) {
-        uint deadline = doAnchorChecks(message);
-        address partnerAddr;
-        assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: sits at finish at 29, and 29 - 32 = -3
-        checkSignatures(keccak256(message), signatures, owner, partnerAddr);
-        swapID = uint(keccak256(message));
-        require(seenSwaps[swapID].timeout == 0, "C");
+    // //NOTE: in multichain, chain on which secret holder is receiving funds must have both a shorter timeout than other chain. 
+    //     //the reason for this is that we don't want secretholder to delay redeeming msg on chain where they are receiving to last second, then not leave nonsecretholder enough time to redeem on ther own chain. 
+    //     //Secondly, we need that the timeout is always longer than the deadline for a chain, so that we cant have a msg pubbed, redeemed, and then erased, and then published again since the deadline hasn't passed.
+    // function singleswapStake(bytes calldata message, bytes calldata signatures, uint entryToDelete, address owner, mapping(address => FeeStruct) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID) {
+    //     uint deadline = doAnchorChecks(message);
+    //     address partnerAddr;
+    //     assembly { partnerAddr := calldataload(sub(message.offset, 3)) } //MAGICNUMBERNOTE: sits at finish at 29, and 29 - 32 = -3
+    //     checkSignatures(keccak256(message), signatures, owner, partnerAddr);
+    //     swapID = uint(keccak256(message));
+    //     require(seenSwaps[swapID].timeout == 0, "C");
 
-        bool singleChain = false;
-        uint8 person;
-        uint8 timeoutHours;
-        if (MsgType(uint8(message[0])) == MsgType.SINGLECHAIN) {
-            singleChain = true;
-        } else {
-            require(MsgType(uint8(message[0])) == MsgType.MULTICHAIN, "G");
-            person = uint8(message[4]);
-            timeoutHours = uint8(message[5]);
-        }
-        processFundsSingleswap(message, person, singleChain, partnerAddr, tokenAmounts);
-        if (singleChain) {
-            seenSwaps[swapID].timeout = deadline;
-        } else {
-            uint hashlock;
-            assembly{ hashlock := calldataload(sub(message.length, 64)) }
-            seenSwaps[swapID].hashlock = hashlock;
-            seenSwaps[swapID].timeout = block.number + (timeoutHours * BLOCKS_PER_HOUR);
-        }
+    //     bool singleChain = false;
+    //     uint8 person;
+    //     uint8 timeoutHours;
+    //     if (MsgType(uint8(message[0])) == MsgType.SINGLECHAIN) {
+    //         singleChain = true;
+    //     } else {
+    //         require(MsgType(uint8(message[0])) == MsgType.MULTICHAIN, "G");
+    //         person = uint8(message[4]);
+    //         timeoutHours = uint8(message[5]);
+    //     }
+    //     processFundsSingleswap(message, person, singleChain, partnerAddr, tokenAmounts);
+    //     if (singleChain) {
+    //         seenSwaps[swapID].timeout = deadline;
+    //     } else {
+    //         uint hashlock;
+    //         assembly{ hashlock := calldataload(sub(message.length, 64)) }
+    //         seenSwaps[swapID].hashlock = hashlock;
+    //         seenSwaps[swapID].timeout = block.number + (timeoutHours * BLOCKS_PER_HOUR);
+    //     }
 
-        //gas saver, clears out old entries to make putting in our entry above less costly. First checks that deadline has expired, so that can't do replay attack. 
-        if (block.number > seenSwaps[entryToDelete].timeout && seenSwaps[entryToDelete].hashlock == 0) {
-            delete seenSwaps[entryToDelete];
-        }
+    //     //gas saver, clears out old entries to make putting in our entry above less costly. First checks that deadline has expired, so that can't do replay attack. 
+    //     if (block.number > seenSwaps[entryToDelete].timeout && seenSwaps[entryToDelete].hashlock == 0) {
+    //         delete seenSwaps[entryToDelete];
+    //     }
         
-    }
+    // }
 
-    //only available/necessary if singleSwap is multichain
-    function singleswapRedeem(bytes calldata message, uint preimage, mapping(address => FeeStruct) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID, bool redeemed) {
-        swapID = uint(keccak256(message));
-        require(seenSwaps[swapID].hashlock != 0, "D"); //funds have already been redeemed, or wasn't a multichain in the first place!
-        //valid redemption, should now send the proper funds to the proper person
+    // //only available/necessary if singleSwap is multichain
+    // function singleswapRedeem(bytes calldata message, uint preimage, mapping(address => FeeStruct) storage tokenAmounts, mapping(uint => SwapStruct) storage seenSwaps) external returns(uint swapID, bool redeemed) {
+    //     swapID = uint(keccak256(message));
+    //     require(seenSwaps[swapID].hashlock != 0, "D"); //funds have already been redeemed, or wasn't a multichain in the first place!
+    //     //valid redemption, should now send the proper funds to the proper person
         
-        uint8 person = uint8(message[4]);
-        //process funds
-        address partnerAddr;
-        uint amount;
-        address addr;
-        assembly { 
-            partnerAddr := calldataload(sub(message.offset, 3))
-            addr := calldataload(add(message.offset, 37))//MAGICNUMBERNOTE: fetching personToken, which sits at 37 + 32 = 69
-            amount := calldataload(add(message.offset, 89))//MAGICNUMBERNOTE: fetching personToken, which starts at 89, uint
-        }
+    //     uint8 person = uint8(message[4]);
+    //     //process funds
+    //     address partnerAddr;
+    //     uint amount;
+    //     address addr;
+    //     assembly { 
+    //         partnerAddr := calldataload(sub(message.offset, 3))
+    //         addr := calldataload(add(message.offset, 37))//MAGICNUMBERNOTE: fetching personToken, which sits at 37 + 32 = 69
+    //         amount := calldataload(add(message.offset, 89))//MAGICNUMBERNOTE: fetching personToken, which starts at 89, uint
+    //     }
         
-        bool timedOut = block.number > seenSwaps[swapID].timeout;
-        if (timedOut) {
-            //has timed out, which means we want to return the funds to sender. This is the exact same code, but with values flipped. To avoid code duplication, 
-            //we can instead just flip the person, so the funds return to owner/partner instead of partner/owner.
-            person = (person == 0) ? 1 : 0;
-        } else {
-            //hasn't timed out yet
-            require(seenSwaps[swapID].hashlock == uint(keccak256(abi.encodePacked(preimage))), "E");
-        }
-        if (person == 0) {
-            //is owner, so owner paid, means partner should receive. OR, got flipped up above, so is owner, but partner paid, which means partner gets return
-            if (addr == NATIVE_TOKEN) {
-                payable(partnerAddr).transfer(amount);
-            } else {
-                bool success = IERC20(addr).transfer(partnerAddr, amount);
-                require(success, "j");
-            }
-        } else {
-            //is partner, so partner paid, owner should receive. OR, got flipped up above, so is partner, but owner paid, owner gets return
-            tokenAmounts[addr].ownerBal += amount;
-        }
-        if (timedOut) {
-            //now safe to fully delete
-            delete seenSwaps[swapID];
-        } else {
-            //just delete hashlock, not whole structure bc deadline may not have yet timed out, we don't want a replay attack
-            delete seenSwaps[swapID].hashlock;
-        }
-        redeemed = (!timedOut); //returns value for redeemed, which is 0 if timedOut, 1 if not timedOut, as desired
-    }
+    //     bool timedOut = block.number > seenSwaps[swapID].timeout;
+    //     if (timedOut) {
+    //         //has timed out, which means we want to return the funds to sender. This is the exact same code, but with values flipped. To avoid code duplication, 
+    //         //we can instead just flip the person, so the funds return to owner/partner instead of partner/owner.
+    //         person = (person == 0) ? 1 : 0;
+    //     } else {
+    //         //hasn't timed out yet
+    //         require(seenSwaps[swapID].hashlock == uint(keccak256(abi.encodePacked(preimage))), "E");
+    //     }
+    //     if (person == 0) {
+    //         //is owner, so owner paid, means partner should receive. OR, got flipped up above, so is owner, but partner paid, which means partner gets return
+    //         if (addr == NATIVE_TOKEN) {
+    //             payable(partnerAddr).transfer(amount);
+    //         } else {
+    //             bool success = IERC20(addr).transfer(partnerAddr, amount);
+    //             require(success, "j");
+    //         }
+    //     } else {
+    //         //is partner, so partner paid, owner should receive. OR, got flipped up above, so is partner, but owner paid, owner gets return
+    //         tokenAmounts[addr].ownerBal += amount;
+    //     }
+    //     if (timedOut) {
+    //         //now safe to fully delete
+    //         delete seenSwaps[swapID];
+    //     } else {
+    //         //just delete hashlock, not whole structure bc deadline may not have yet timed out, we don't want a replay attack
+    //         delete seenSwaps[swapID].hashlock;
+    //     }
+    //     redeemed = (!timedOut); //returns value for redeemed, which is 0 if timedOut, 1 if not timedOut, as desired
+    // }
     
     
     /**
@@ -565,7 +565,8 @@ library StormLib {
     
         uint numTokens = uint(uint8(message[NUM_TOKEN])); //otherwise, when multiplying, will overflow
         
-        uint channelID = uint(keccak256(abi.encodePacked(uint32(block.number), message[1: START_ADDRS + (numTokens * 20)]))); //calcs channelID, inserting the block number in front. 
+        uint channelID = uint(keccak256(abi.encodePacked(uint32(block.number), message[5: START_ADDRS + (numTokens * 20)]))); //calcs channelID, inserting the block number in front. 
+        emit SettledSubset(channelID, uint32(block.number), abi.encodePacked(uint32(block.number), message[5: START_ADDRS + (numTokens * 20)]));
         require(!channels[channelID].exists, "s");
 
         uint160 balanceTotalsHash = lockTokens(message[START_ADDRS : START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)], numTokens, partnerAddr, tokenAmounts);
@@ -946,7 +947,7 @@ library StormLib {
         } else {
             //is initial, so we want to check sig off of the partnerAddr, not pSignerAddr
             assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: bc end of partnerAddr sits at 28, 28 - 32 = -4
-            checkSignatures(keccak256(abi.encodePacked(message[0: 1], message[5: endMsg0 + 32])), signatures, owner, partnerAddr); //MAGICNUMBERNOTE: have to add 32 bc goes right up to deadline. DO this funky abi.encodePacked bc signature for anchor msg does not include blockAtAnchor, so we must strip it out. 
+            checkSignatures(keccak256(abi.encodePacked(message[0: 1], bytes4(0), message[5: endMsg0 + 32])), signatures, owner, partnerAddr); //MAGICNUMBERNOTE: have to add 32 bc goes right up to deadline. DO this funky abi.encodePacked bc signature for anchor msg does not include blockAtAnchor, but rather 4 bytes of zeros, so we must excise blocktAtAnchor, and add these in. 
         }
 
         if (!channel.settlementInProgress) {
