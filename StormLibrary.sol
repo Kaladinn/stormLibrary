@@ -229,7 +229,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
     
 library StormLib {
     event Anchored(uint indexed channelID, bytes message, bytes partnerSig);
-    event Settled(uint indexed channelID, bytes tokenBalances);
+    event Settled(uint indexed channelID, bytes message);
     event SettledSubset(uint indexed channelID, uint32 indexed nonce, bytes tokenBalances);
     event DisputeStarted(uint indexed channelID, uint32 indexed nonce, bytes message);
     event ShardStatesAtDisputeStart(uint indexed channelID, uint32 indexed nonce, uint8[] shardDataMsgArr);
@@ -566,7 +566,6 @@ library StormLib {
         uint numTokens = uint(uint8(message[NUM_TOKEN])); //otherwise, when multiplying, will overflow
         
         uint channelID = uint(keccak256(abi.encodePacked(uint32(block.number), message[5: START_ADDRS + (numTokens * 20)]))); //calcs channelID, inserting the block number in front. 
-        emit SettledSubset(channelID, uint32(block.number), abi.encodePacked(uint32(block.number), message[5: START_ADDRS + (numTokens * 20)]));
         require(!channels[channelID].exists, "s");
 
         uint160 balanceTotalsHash = lockTokens(message[START_ADDRS : START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)], numTokens, partnerAddr, tokenAmounts);
@@ -684,64 +683,48 @@ library StormLib {
         channel.nonce = nonce;
     }
 
-    //here, it is assumed that fee1 > fee2, or person 1 losing net money, person 2 gaining net money, before consider Kaladime fees.
-    //First, we calculate the fees that each person owes Kaladin based on their fee1, fee2 number. Now, we look at how much they owe each other.
-    //Primary objective is to get Kaladin as much as they are due, then have partners pay each other, and also to make sure that fee1, fee2 represent how much was paid in fees to Kaladin, 
-    //which is the number that is used to calculate their number of Kaladimes. 
-    //1. Check whether person who is receiving net money can pay their Kaladime fees with their balance plus the net gain from their partner. 
-        //If they can't, we suck out all of their funds, and set their contribution equal to their bal + amount from their partner, and set that they are sending their partner nothing. 
-        //If they can, we just decrement their funds.
-    //2. Now, check whether person who is losing money can pay their Kaladime fees, with addition that their CP may not be giving them money, if they couldn't pay Kaladime fees.
-        //If they can't, we check how short they are.
-            //If they can't even pay fee w/ balance + what downstream paid them, then their contribution to downstream (CtD) is zero. If they can do that, but can't pay full contribution to downstream, 
-                //then CtD is the amount they pay downstream before running out of funds.
-            //Now, we check whether the downstream was actually able to their fees if they lost fee1To2 and only got CtD. If they still could, we just update their balance to reflect getting CtD, not the full fee1To2.
-            //If they can't, we set their balance to 0, to reflect paying the full fees. Then, the fees they actually paid are proportial to how much they originally had + how much they sent to 1 + CtD.
-        //If they can, we just decrement their balance proportional to paying those fees, and we exit.
-
-    //In the end, an individual can lose money based on whether their CPs fees end up being greater than the channel fees, but Kaladin will never give out more Kaladimes that they receive in fees (up to a constant of proportionality).
-    function feeLogic(uint bal1, uint bal2, uint fee1, uint fee2) private pure returns (uint, uint, uint, uint) {
+    //takes in the owner and partner balances, and the ownerFee, or the total amount of money that owner has sent to partner, and partnerFee, the total amount that partner has sent to owner. 
+    //then, computes the fees owned from these numbers, and updates the owner/partnerBals to reflect these paid fees, then sets owner/partnerFee to reflect the amount of money being paid to kaladin (which is also directly
+    //proportional to the amount of Kaladimes earned)
+    function handleFees(BalanceStruct memory balanceStruct) private {
             //partner is gaining funds from fees, but may owe more than they can pay, to Kaladin
-            fee1 = uint(fee1 / FEE_DENOM_TOTAL); //convert fee from total sent through channel, to amount acutally needing to pay.
-            fee2 = uint(fee2 / FEE_DENOM_TOTAL);
-            uint KaladinFee1 = uint(fee1 / FEE_DENOM_KAL);
-            uint KaladinFee2 = uint(fee2 / FEE_DENOM_KAL);
-            uint fee2To1 = fee2 - KaladinFee2;
-            uint fee1To2 = fee1 - KaladinFee1;
-            uint originalBal2 = bal2;
-            if (bal2 + (fee1To2 - fee2To1) < KaladinFee2) {
-                //bal2 is not able to pay the full Kaladin Fee. They can only pay a partial. So, we will ignore any money sent to them.
-                //so, we set their fees paid(for Kaladime purposes) to be their entire balance plus what is paid to them by the CP
-                fee2 = (bal2 + fee1To2) * FEE_DENOM_KAL;
-                bal2 = 0;
-                fee2To1 = 0;
-            } else {
-                bal2 = bal2 + (fee1To2 - fee2To1) - KaladinFee2;
-            }
-            if (bal1 < (fee1To2 - fee2To1) + KaladinFee1) {
-                uint fee1To2Actual = (bal1 + fee2To1) < KaladinFee1 ? 0 : KaladinFee1 - (bal1 + fee2To1);
-                fee1 = (bal1 + fee2To1) * FEE_DENOM_KAL;
-                bal1 = 0;
-                if (bal2 < (fee1To2 - fee1To2Actual)) {
-                    //means wont be able to afford the fees. Will have actually paid less. So, their funds go to zero, and their fees are now a function of their original balance + how much they were paid
-                    bal2 = 0;
-                    fee2 = (originalBal2 + fee2To1 + fee1To2Actual) * FEE_DENOM_KAL;
-                } else {
-                    bal2 -= (fee1To2 - fee1To2Actual);
+            uint ownerFee = uint(balanceStruct.ownerFee / FEE_DENOM_TOTAL);
+            uint partnerFee = uint(balanceStruct.partnerFee / FEE_DENOM_TOTAL);
+            uint ownerFeeKaladin = uint(ownerFee / FEE_DENOM_KAL);
+            uint partnerFeeKaladin = uint(partnerFee / FEE_DENOM_KAL);
+            
+            //if fees are greater than amount that can be paid, then we just set fees to the maximum possible amounts.Starting first with maxing out the Kaladin fee, 
+            //then if there is anthig left, paying these fees to the partner. We do this bc both parties must be acting maliciously; if one party follows protocol, the server code will assure
+            //that no msgs signed where fees will exceed the amount in the channel
+            if (ownerFee < balanceStruct.ownerBalance) {
+                if (ownerFeeKaladin < balanceStruct.ownerBalance) {
+                    ownerFeeKaladin = balanceStruct.ownerBalance;
                 }
+                ownerFee = balanceStruct.ownerBalance;
+                balanceStruct.ownerBalance = 0;
             } else {
-                bal1 -= ((fee1To2 - fee2To1) + KaladinFee1);
+                balanceStruct.ownerBalance -= ownerFee;
             }
-            return (bal1, bal2, fee1 / FEE_DENOM_KAL, fee2 / FEE_DENOM_KAL);
+            if (partnerFee < balanceStruct.partnerBalance) {
+                if (partnerFeeKaladin < balanceStruct.partnerBalance) {
+                    partnerFeeKaladin = balanceStruct.partnerBalance;
+                }
+                partnerFee = balanceStruct.partnerBalance;
+                balanceStruct.partnerBalance = 0;
+            } else {
+                balanceStruct.partnerBalance -= partnerFee;
+            }
+            balanceStruct.ownerBalance += (partnerFee - partnerFeeKaladin);
+            balanceStruct.partnerBalance += (ownerFee - ownerFeeKaladin);
+            balanceStruct.ownerFee = ownerFeeKaladin;
+            balanceStruct.partnerFee = partnerFeeKaladin;
     }
 
     //message starts at where the owner, partner balances will be.
     //This is called by both withdraw and settle/settlesubset. If its withdraw, we have already built out the balanceStruct, so we dont do that here. We have also checked that the balances dont exceed the 
     //balanceTotal, so again, we only do this if settle/settleSubset. 
     function calcBalsAndFees(bytes calldata message, BalanceStruct memory balanceStruct, uint balanceTotal, address partnerAddr, uint i) private returns (address tokenAddress) {
-        bool isSettle = (MsgType(uint8(message[0])) == MsgType.SETTLE || MsgType(uint8(message[0])) == MsgType.SETTLESUBSET);   
-             
-        if (isSettle) {
+        if (MsgType(uint8(message[0])) == MsgType.SETTLE || MsgType(uint8(message[0])) == MsgType.SETTLESUBSET) {
             uint numTokens = uint(uint8(message[NUM_TOKEN]));
             assembly { calldatacopy(add(balanceStruct, 32), add(add(add(message.offset, START_ADDRS), mul(numTokens, 20)), mul(i, 128)), 128) }
             require(balanceStruct.ownerBal + balanceStruct.partnerBal == balanceTotal, "l");
@@ -749,11 +732,8 @@ library StormLib {
         assembly { tokenAddress := calldataload(add(add(message.offset, sub(START_ADDRS, 12)), mul(i, 20))) }
     
         
-        if (balanceStruct.ownerFee > balanceStruct.partnerFee) {
-            (balanceStruct.ownerBal, balanceStruct.partnerBal, balanceStruct.ownerFee, balanceStruct.partnerFee) = feeLogic(balanceStruct.ownerBal, balanceStruct.partnerBal, balanceStruct.ownerFee, balanceStruct.partnerFee);
-        } else {
-            (balanceStruct.partnerBal, balanceStruct.ownerBal, balanceStruct.partnerFee, balanceStruct.ownerFee) = feeLogic(balanceStruct.partnerBal, balanceStruct.ownerBal, balanceStruct.partnerFee, balanceStruct.ownerFee);
-        }
+        handleFees(balanceStruct.ownerBal, balanceStruct.partnerBal, balanceStruct.ownerFee, balanceStruct.partnerFee);
+       
         //now, ownerFee and partnerFee correspond to the amount they should pay Kaladin
         uint conversionRate = 1; //TODO: call out to uniswap to get our actual conversion rate
 

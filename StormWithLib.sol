@@ -126,7 +126,7 @@ contract Storm {
         } else if (channelFunction == StormLib.ChannelFunctionTypes.WITHDRAW) {
             (uint channelID) = StormLib.withdraw(message, channels, tokenAmounts);
             lockCount -= 1;
-            emit StormLib.Settled(channelID, message[StormLib.START_ADDRS : message.length]);
+            emit StormLib.Settled(channelID, message);
         } else { revert('D'); }
 
         //unlock and contract that calls out to IERC20, which are all but update and startdispute
