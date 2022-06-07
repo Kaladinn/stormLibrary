@@ -32,7 +32,7 @@ contract Storm {
     
     constructor () payable {
         owner = msg.sender;
-        tokenAmounts[address(0)].ownerBal = msg.value;
+        tokenAmounts[address(0)].ownerBalance = msg.value;
         //TO DO: should user be able to optionally call addFunds here? Could be really hard to coordinate with approve calls since dont know nonce beforehand. 
     }
 
@@ -42,7 +42,7 @@ contract Storm {
      */
     receive() external payable {
         require(reentrancyLock == 0, "a");
-        tokenAmounts[address(0)].ownerBal += msg.value;
+        tokenAmounts[address(0)].ownerBalance += msg.value;
     }
 
 
@@ -108,8 +108,6 @@ contract Storm {
             uint channelID = StormLib.anchor(message, signatures, owner, channels, tokenAmounts);
             lockCount += 1;
             emit StormLib.Anchored(channelID, message, signatures[65:130]);
-        } else if (channelFunction == StormLib.ChannelFunctionTypes.UPDATE) {
-            StormLib.update(message, signatures, owner, channels);
         } else if (channelFunction == StormLib.ChannelFunctionTypes.ADDFUNDSTOCHANNEL) {
             (uint channelID, uint32 nonce) = StormLib.addFundsToChannel(message, signatures, owner, channels, tokenAmounts);
             emit StormLib.FundsAddedToChannel(channelID, nonce, message[StormLib.START_ADDRS: message.length]);

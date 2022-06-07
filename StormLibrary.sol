@@ -229,7 +229,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
     
 library StormLib {
     event Anchored(uint indexed channelID, bytes message, bytes partnerSig);
-    event Settled(uint indexed channelID, bytes message);
+    event Settled(uint indexed channelID, bytes tokenBalances);
     event SettledSubset(uint indexed channelID, uint32 indexed nonce, bytes tokenBalances);
     event DisputeStarted(uint indexed channelID, uint32 indexed nonce, bytes message);
     event ShardStatesAtDisputeStart(uint indexed channelID, uint32 indexed nonce, uint8[] shardDataMsgArr);
@@ -248,14 +248,14 @@ library StormLib {
     }
 
     struct FeeStruct {
-        uint ownerBal; //how much available of this token the owner has
-        uint KaladinBal; //how much in fees Kaladin has accrued that is sitting in contract, waiting to be redeemed.
+        uint ownerBalance; //how much available of this token the owner has
+        uint KaladinBalance; //how much in fees Kaladin has accrued that is sitting in contract, waiting to be redeemed.
     }
 
 
     struct BalanceStruct {
-        uint ownerBal;
-        uint partnerBal;
+        uint ownerBalance;
+        uint partnerBalance;
         uint ownerFee;
         uint partnerFee;
     }
@@ -301,21 +301,21 @@ library StormLib {
             for (uint i = 0; i < tokens.length; i++) {
                 bool success = IERC20(tokens[i]).transferFrom(owner, address(this), funds[i]); //TO DO: consider reentrancy attacks here.
                 require(success, "j"); 
-                tokenAmounts[tokens[i]].ownerBal += funds[i];
+                tokenAmounts[tokens[i]].ownerBalance += funds[i];
             }
-            tokenAmounts[NATIVE_TOKEN].ownerBal += msg.value;
+            tokenAmounts[NATIVE_TOKEN].ownerBalance += msg.value;
         } else {
             for (uint i = 0; i < tokens.length; i++) {
                 //settle KaladinBals
                 if (tokens[i] == NATIVE_TOKEN) {
-                    payable(KALADIN_ADDR).transfer(tokenAmounts[tokens[i]].KaladinBal);
+                    payable(KALADIN_ADDR).transfer(tokenAmounts[tokens[i]].KaladinBalance);
                 } else {
-                    IERC20(tokens[i]).transfer(KALADIN_ADDR, tokenAmounts[tokens[i]].KaladinBal); 
+                    IERC20(tokens[i]).transfer(KALADIN_ADDR, tokenAmounts[tokens[i]].KaladinBalance); 
                 }
-                tokenAmounts[tokens[i]].KaladinBal = 0;
+                tokenAmounts[tokens[i]].KaladinBalance = 0;
                 if (owner != address(0)) {
                     //settle ownerBals
-                    tokenAmounts[tokens[i]].ownerBal -= funds[i]; //This will throw error if underflow bc trying to withdraw more funds than are owned.
+                    tokenAmounts[tokens[i]].ownerBalance -= funds[i]; //This will throw error if underflow bc trying to withdraw more funds than are owned.
                     if (tokens[i] == NATIVE_TOKEN) {
                         payable(owner).transfer(funds[i]);
                     } else {
@@ -401,7 +401,7 @@ library StormLib {
                 bool success = token.transferFrom(partnerAddr, address(this), _partnerBalance);
                 require(success, "j");
             }
-            tokenAmounts[tokenAddress].ownerBal -= _ownerBalance; //solidity 0.8.x should catch overflow here. 
+            tokenAmounts[tokenAddress].ownerBalance -= _ownerBalance; //solidity 0.8.x should catch overflow here. 
         }
         //have looped through all of them, update the balances in the tokenAmounts, and also encountered no errors! can now set balances to be balances in this msg.
         return uint160(bytes20(keccak256(abi.encodePacked(balances))));
@@ -433,7 +433,7 @@ library StormLib {
     //     }
     //     if (person == 0 || singleChain) {
     //         //these are funds owner is providing
-    //         tokenAmounts[addr].ownerBal -= ownerAmount;
+    //         tokenAmounts[addr].ownerBalance -= ownerAmount;
     //         if (singleChain) {
     //             //distribute funds instantly
     //             if (addr == NATIVE_TOKEN) {
@@ -452,7 +452,7 @@ library StormLib {
     //                 addr := calldataload(add(message.offset, 57))//MAGICNUMBERNOTE: fetching partnerToken, which sits at 57 + 32 = 89
     //                 partnerAmount := calldataload(add(message.offset, 121))//MAGICNUMBERNOTE: fetching partnerAmount, which starts at 121, uint
     //             }
-    //             tokenAmounts[addr].ownerBal += partnerAmount;
+    //             tokenAmounts[addr].ownerBalance += partnerAmount;
     //         }
     //         if (addr == NATIVE_TOKEN) {
     //             require(msg.value == partnerAmount, "k");
@@ -537,7 +537,7 @@ library StormLib {
     //         }
     //     } else {
     //         //is partner, so partner paid, owner should receive. OR, got flipped up above, so is partner, but owner paid, owner gets return
-    //         tokenAmounts[addr].ownerBal += amount;
+    //         tokenAmounts[addr].ownerBalance += amount;
     //     }
     //     if (timedOut) {
     //         //now safe to fully delete
@@ -575,48 +575,48 @@ library StormLib {
         return channelID;
     }
 
+    //TODO: I want to delete this. Keeping it around just for safety in case needed. If every re-added, would also need to add logic in the StormLib to call it.
+    // /**
+    // * update() checks the current balances described in the passed message, then updates just the nonce. Update is called when you want to  
+    // * lock in a state to guarantee that you will never revert to a state before this. If you dont want to 
+    // * stay live but dont want to settle, you can call this with the most recent message and go offline for a period of time,
+    // * knowing startsettlment can not be called with a prior message, and no new messages will be signed, making you safe. 
+    // * We only update nonce so its cheaper, but do all the checks so a faulty signed msg couldn't permanently lock funds (no higher
+    // * nonced msgs, cant settle on this one, CP wont respond).
+    // * update() is only valid for Unconditional messages from an external call, for obvious reasons.
+    // * Not valid for a sharded Msg. Just call out to the watchtowers, sending them the double sig. TO DO: decide if want to make valid for shardedMsg
+    // */
+    // function update(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external {        
+    //     require (MsgType(uint8(message[0])) == MsgType.UNCONDITIONAL, "p");
+    //     uint numTokens = uint(uint8(message[NUM_TOKEN]));
+    //     address pSignerAddr;
+    //     assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes
+    //     checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+    //     uint channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
+    //     Channel storage channel = channels[channelID];
+    //     require(channel.exists, "u");
+    //     require(!channel.settlementInProgress, "w");//User should just call startDispute instead.
+    //     require(channel.balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
 
-    /**
-    * update() checks the current balances described in the passed message, then updates just the nonce. Update is called when you want to  
-    * lock in a state to guarantee that you will never revert to a state before this. If you dont want to 
-    * stay live but dont want to settle, you can call this with the most recent message and go offline for a period of time,
-    * knowing startsettlment can not be called with a prior message, and no new messages will be signed, making you safe. 
-    * We only update nonce so its cheaper, but do all the checks so a faulty signed msg couldn't permanently lock funds (no higher
-    * nonced msgs, cant settle on this one, CP wont respond).
-    * update() is only valid for Unconditional messages from an external call, for obvious reasons.
-    * Not valid for a sharded Msg. Just call out to the watchtowers, sending them the double sig. TO DO: decide if want to make valid for shardedMsg
-    */
-    function update(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels) external {        
-        require (MsgType(uint8(message[0])) == MsgType.UNCONDITIONAL, "p");
-        uint numTokens = uint(uint8(message[NUM_TOKEN]));
-        address pSignerAddr;
-        assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes
-        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
-        uint channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        Channel storage channel = channels[channelID];
-        require(channel.exists, "u");
-        require(!channel.settlementInProgress, "w");//User should just call startDispute instead.
-        require(channel.balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
-
-        uint _ownerBalance;
-        uint _partnerBalance;
-        uint balanceTotal;
-        for (uint i = 0; i < numTokens; i++){
-            assembly {
-                let startBals := add(add(message.offset, START_ADDRS), mul(numTokens, 20))
-                _ownerBalance := calldataload(add(startBals, mul(i, 128)))
-                _partnerBalance := calldataload(add(add(startBals, 32), mul(i, 128)))
-                balanceTotal := calldataload(add(add(startBals, mul(numTokens, 128)), mul(i, 32)))
-            }
-            require(_ownerBalance + _partnerBalance == balanceTotal, "l");
-        }
+    //     uint _ownerBalance;
+    //     uint _partnerBalance;
+    //     uint balanceTotal;
+    //     for (uint i = 0; i < numTokens; i++){
+    //         assembly {
+    //             let startBals := add(add(message.offset, START_ADDRS), mul(numTokens, 20))
+    //             _ownerBalance := calldataload(add(startBals, mul(i, 128)))
+    //             _partnerBalance := calldataload(add(add(startBals, 32), mul(i, 128)))
+    //             balanceTotal := calldataload(add(add(startBals, mul(numTokens, 128)), mul(i, 32)))
+    //         }
+    //         require(_ownerBalance + _partnerBalance == balanceTotal, "l");
+    //     }
         
-        //All looks good! Update nonce(the only thing we actually update)
-        uint32 nonce;
-        assembly { nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) } //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 for the nonce
-        require(channel.nonce < nonce, "x");
-        channel.nonce = nonce;
-    } 
+    //     //All looks good! Update nonce(the only thing we actually update)
+    //     uint32 nonce;
+    //     assembly { nonce := calldataload(add(message.offset, sub(message.length, add(32, mul(numTokens, 32))))) } //MAGICNUMBERNOTE: this comes from removing the balanceTotals, then skipping back 32 for the nonce
+    //     require(channel.nonce < nonce, "x");
+    //     channel.nonce = nonce;
+    // } 
 
     //loop over the tokens, and if the balance field is not 0, then we make the requisite calls
     function addFundsHelper(bytes calldata message, uint numTokens, mapping(address => FeeStruct) storage tokenAmounts) private returns (uint160 balanceTotalsHashNew) {
@@ -638,7 +638,7 @@ library StormLib {
             }
             //process any owner added funds
             if (amountToAddOwner != 0) {
-                tokenAmounts[tokenAddress].ownerBal -= amountToAddOwner;
+                tokenAmounts[tokenAddress].ownerBalance -= amountToAddOwner;
             }
 
             //process any partner added funds
@@ -683,65 +683,84 @@ library StormLib {
         channel.nonce = nonce;
     }
 
-    //takes in the owner and partner balances, and the ownerFee, or the total amount of money that owner has sent to partner, and partnerFee, the total amount that partner has sent to owner. 
-    //then, computes the fees owned from these numbers, and updates the owner/partnerBals to reflect these paid fees, then sets owner/partnerFee to reflect the amount of money being paid to kaladin (which is also directly
-    //proportional to the amount of Kaladimes earned)
-    function handleFees(BalanceStruct memory balanceStruct) private {
+    //here, it is assumed that fee1 > fee2, or person 1 losing net money, person 2 gaining net money, before consider Kaladime fees.
+    //First, we calculate the fees that each person owes Kaladin based on their fee1, fee2 number. Now, we look at how much they owe each other.
+    //Primary objective is to get Kaladin as much as they are due, then have partners pay each other, and also to make sure that fee1, fee2 represent how much was paid in fees to Kaladin, 
+    //which is the number that is used to calculate their number of Kaladimes. 
+    //1. Check whether person who is receiving net money can pay their Kaladime fees with their balance plus the net gain from their partner. 
+        //If they can't, we suck out all of their funds, and set their contribution equal to their bal + amount from their partner, and set that they are sending their partner nothing. 
+        //If they can, we just decrement their funds.
+    //2. Now, check whether person who is losing money can pay their Kaladime fees, with addition that their CP may not be giving them money, if they couldn't pay Kaladime fees.
+        //If they can't, we check how short they are.
+            //If they can't even pay fee w/ balance + what downstream paid them, then their contribution to downstream (CtD) is zero. If they can do that, but can't pay full contribution to downstream, 
+                //then CtD is the amount they pay downstream before running out of funds.
+            //Now, we check whether the downstream was actually able to their fees if they lost fee1To2 and only got CtD. If they still could, we just update their balance to reflect getting CtD, not the full fee1To2.
+            //If they can't, we set their balance to 0, to reflect paying the full fees. Then, the fees they actually paid are proportial to how much they originally had + how much they sent to 1 + CtD.
+        //If they can, we just decrement their balance proportional to paying those fees, and we exit.
+
+    //In the end, an individual can lose money based on whether their CPs fees end up being greater than the channel fees, but Kaladin will never give out more Kaladimes that they receive in fees (up to a constant of proportionality).
+    function feeLogic(uint bal1, uint bal2, uint fee1, uint fee2) private pure returns (uint, uint, uint, uint) {
             //partner is gaining funds from fees, but may owe more than they can pay, to Kaladin
-            uint ownerFee = uint(balanceStruct.ownerFee / FEE_DENOM_TOTAL);
-            uint partnerFee = uint(balanceStruct.partnerFee / FEE_DENOM_TOTAL);
-            uint ownerFeeKaladin = uint(ownerFee / FEE_DENOM_KAL);
-            uint partnerFeeKaladin = uint(partnerFee / FEE_DENOM_KAL);
-            
-            //if fees are greater than amount that can be paid, then we just set fees to the maximum possible amounts.Starting first with maxing out the Kaladin fee, 
-            //then if there is anthig left, paying these fees to the partner. We do this bc both parties must be acting maliciously; if one party follows protocol, the server code will assure
-            //that no msgs signed where fees will exceed the amount in the channel
-            if (ownerFee < balanceStruct.ownerBalance) {
-                if (ownerFeeKaladin < balanceStruct.ownerBalance) {
-                    ownerFeeKaladin = balanceStruct.ownerBalance;
-                }
-                ownerFee = balanceStruct.ownerBalance;
-                balanceStruct.ownerBalance = 0;
+            fee1 = uint(fee1 / FEE_DENOM_TOTAL); //convert fee from total sent through channel, to amount acutally needing to pay.
+            fee2 = uint(fee2 / FEE_DENOM_TOTAL);
+            uint KaladinFee1 = uint(fee1 / FEE_DENOM_KAL);
+            uint KaladinFee2 = uint(fee2 / FEE_DENOM_KAL);
+            uint fee2To1 = fee2 - KaladinFee2;
+            uint fee1To2 = fee1 - KaladinFee1;
+            uint originalBal2 = bal2;
+            if (bal2 + (fee1To2 - fee2To1) < KaladinFee2) {
+                //bal2 is not able to pay the full Kaladin Fee. They can only pay a partial. So, we will ignore any money sent to them.
+                //so, we set their fees paid(for Kaladime purposes) to be their entire balance plus what is paid to them by the CP
+                fee2 = (bal2 + fee1To2) * FEE_DENOM_KAL;
+                bal2 = 0;
+                fee2To1 = 0;
             } else {
-                balanceStruct.ownerBalance -= ownerFee;
+                bal2 = bal2 + (fee1To2 - fee2To1) - KaladinFee2;
             }
-            if (partnerFee < balanceStruct.partnerBalance) {
-                if (partnerFeeKaladin < balanceStruct.partnerBalance) {
-                    partnerFeeKaladin = balanceStruct.partnerBalance;
+            if (bal1 < (fee1To2 - fee2To1) + KaladinFee1) {
+                uint fee1To2Actual = (bal1 + fee2To1) < KaladinFee1 ? 0 : KaladinFee1 - (bal1 + fee2To1);
+                fee1 = (bal1 + fee2To1) * FEE_DENOM_KAL;
+                bal1 = 0;
+                if (bal2 < (fee1To2 - fee1To2Actual)) {
+                    //means wont be able to afford the fees. Will have actually paid less. So, their funds go to zero, and their fees are now a function of their original balance + how much they were paid
+                    bal2 = 0;
+                    fee2 = (originalBal2 + fee2To1 + fee1To2Actual) * FEE_DENOM_KAL;
+                } else {
+                    bal2 -= (fee1To2 - fee1To2Actual);
                 }
-                partnerFee = balanceStruct.partnerBalance;
-                balanceStruct.partnerBalance = 0;
             } else {
-                balanceStruct.partnerBalance -= partnerFee;
+                bal1 -= ((fee1To2 - fee2To1) + KaladinFee1);
             }
-            balanceStruct.ownerBalance += (partnerFee - partnerFeeKaladin);
-            balanceStruct.partnerBalance += (ownerFee - ownerFeeKaladin);
-            balanceStruct.ownerFee = ownerFeeKaladin;
-            balanceStruct.partnerFee = partnerFeeKaladin;
+            return (bal1, bal2, fee1 / FEE_DENOM_KAL, fee2 / FEE_DENOM_KAL);
     }
 
     //message starts at where the owner, partner balances will be.
     //This is called by both withdraw and settle/settlesubset. If its withdraw, we have already built out the balanceStruct, so we dont do that here. We have also checked that the balances dont exceed the 
     //balanceTotal, so again, we only do this if settle/settleSubset. 
     function calcBalsAndFees(bytes calldata message, BalanceStruct memory balanceStruct, uint balanceTotal, address partnerAddr, uint i) private returns (address tokenAddress) {
-        if (MsgType(uint8(message[0])) == MsgType.SETTLE || MsgType(uint8(message[0])) == MsgType.SETTLESUBSET) {
+        bool isSettle = (MsgType(uint8(message[0])) == MsgType.SETTLE || MsgType(uint8(message[0])) == MsgType.SETTLESUBSET);   
+             
+        if (isSettle) {
             uint numTokens = uint(uint8(message[NUM_TOKEN]));
             assembly { calldatacopy(add(balanceStruct, 32), add(add(add(message.offset, START_ADDRS), mul(numTokens, 20)), mul(i, 128)), 128) }
-            require(balanceStruct.ownerBal + balanceStruct.partnerBal == balanceTotal, "l");
+            require(balanceStruct.ownerBalance + balanceStruct.partnerBalance == balanceTotal, "l");
         }
         assembly { tokenAddress := calldataload(add(add(message.offset, sub(START_ADDRS, 12)), mul(i, 20))) }
     
         
-        handleFees(balanceStruct.ownerBal, balanceStruct.partnerBal, balanceStruct.ownerFee, balanceStruct.partnerFee);
-       
+        if (balanceStruct.ownerFee > balanceStruct.partnerFee) {
+            (balanceStruct.ownerBalance, balanceStruct.partnerBalance, balanceStruct.ownerFee, balanceStruct.partnerFee) = feeLogic(balanceStruct.ownerBalance, balanceStruct.partnerBalance, balanceStruct.ownerFee, balanceStruct.partnerFee);
+        } else {
+            (balanceStruct.partnerBalance, balanceStruct.ownerBalance, balanceStruct.partnerFee, balanceStruct.ownerFee) = feeLogic(balanceStruct.partnerBalance, balanceStruct.ownerBalance, balanceStruct.partnerFee, balanceStruct.ownerFee);
+        }
         //now, ownerFee and partnerFee correspond to the amount they should pay Kaladin
         uint conversionRate = 1; //TODO: call out to uniswap to get our actual conversion rate
 
-        if (balanceStruct.partnerBal != 0) {
+        if (balanceStruct.partnerBalance != 0) {
             if (tokenAddress == NATIVE_TOKEN) {
-                payable(partnerAddr).transfer(balanceStruct.partnerBal);
+                payable(partnerAddr).transfer(balanceStruct.partnerBalance);
             } else {
-                IERC20(tokenAddress).transfer(partnerAddr, balanceStruct.partnerBal);
+                IERC20(tokenAddress).transfer(partnerAddr, balanceStruct.partnerBalance);
             }
         }
         
@@ -764,8 +783,8 @@ library StormLib {
                 BalanceStruct memory balanceStruct;
                 address tokenAddress = calcBalsAndFees(message, balanceStruct, balanceTotal, partnerAddr, i);
                 totalKLD += balanceStruct.ownerFee;
-                tokenAmounts[tokenAddress].ownerBal += balanceStruct.ownerBal;
-                tokenAmounts[tokenAddress].KaladinBal += (balanceStruct.ownerFee + balanceStruct.partnerFee);
+                tokenAmounts[tokenAddress].ownerBalance += balanceStruct.ownerBalance;
+                tokenAmounts[tokenAddress].KaladinBalance += (balanceStruct.ownerFee + balanceStruct.partnerFee);
                 if (isSettleSubset) {
                     //is subset, so we want to track the new balanceTotals
                     balanceTotalsNew[i] = 0;
@@ -777,7 +796,7 @@ library StormLib {
             }  
             //NOTE: in case where balanceTotal == 0 and isSettleSubset, then we dont set the balanceTotalsNew[i]. This is okay, as balanceTotalsNew defaults to 0. 
         }
-        tokenAmounts[KALADIMES_BAL_MAP_INDEX].ownerBal += totalKLD;
+        tokenAmounts[KALADIMES_BAL_MAP_INDEX].ownerBalance += totalKLD;
         return uint160(bytes20(abi.encodePacked(balanceTotalsNew)));
     }
 
@@ -1028,13 +1047,13 @@ library StormLib {
             assembly { amount := calldataload(add(message.offset, add(shardPointer, 2))) } //MAGICNUMBERNOTE: jumps over tokenIndex, ownerGoR
             if ((ownerGiving && shardState == 0) || (!ownerGiving && shardState == 1)) {
                 //owner was giving and the funds reverted, so owner gets them back, or owner was receiving and it was pushed through, so owner actually gets them.
-                shardTokenBals[i].ownerBal += amount;
+                shardTokenBals[i].ownerBalance += amount;
                 if (shardState == 1) {
                     shardTokenBals[i].partnerFee += amount; //partnerFee since they were the sender. Only add fees for swaps that suceeed
                 }
             } else {
                 //owner was giving and funds pushed through, so partner gets them, or partner was receiving and reverted, so partner gets them back
-                shardTokenBals[i].partnerBal += amount;
+                shardTokenBals[i].partnerBalance += amount;
                 if (shardState == 1) {
                     shardTokenBals[i].ownerFee += amount; //ownerFee since they were the sender. Only add fees for swaps that suceeed
                 }
@@ -1073,10 +1092,10 @@ library StormLib {
             //NOTE: no need ot check local bals are les than balanceTotal; havev already done so in startDispute. So, we pass 0 as balanceTotal, as a dummy paramt that calcBalsAndFees will just ignore.
             tokenAddress = calcBalsAndFees(message, shardTokenBals[i], 0, partnerAddr, i);
             totalKLD += shardTokenBals[i].ownerFee;
-            tokenAmounts[tokenAddress].ownerBal += shardTokenBals[i].ownerBal;
-            tokenAmounts[tokenAddress].KaladinBal += (shardTokenBals[i].ownerFee + shardTokenBals[i].partnerFee);
+            tokenAmounts[tokenAddress].ownerBalance += shardTokenBals[i].ownerBalance;
+            tokenAmounts[tokenAddress].KaladinBalance += (shardTokenBals[i].ownerFee + shardTokenBals[i].partnerFee);
         }
-        tokenAmounts[KALADIMES_BAL_MAP_INDEX].ownerBal += totalKLD;
+        tokenAmounts[KALADIMES_BAL_MAP_INDEX].ownerBalance += totalKLD;
         //clean up
         delete channels[channelID];
     }
