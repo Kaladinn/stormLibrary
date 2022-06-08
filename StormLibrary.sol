@@ -199,6 +199,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //         (variable) channelID 
 //         (uint, uint)[] fundsToAdd
 //         nonce 
+// 05 01e92822 00002a d19B7fF9a32855321B94BD96E9d0a345480AD701 26915193861AeB14ecb29e6470C09ca3a71Fbb0f d19B7fF9a32855321B94BD96E9d0a345480AD701 03 0000000000000000000000000000000000000000 F96b2CFf7E588a8Bd07cEfdD8595B6573bebf753 8ea749CbC644E2Ada55479Dd124a995bCC5F4F35 000000000000000000000000000000000000000000000000000000000000005f 000000000000000000000000000000000000000000000000000000000000005f 0000000000000000000000000000000000000000000000000000000000000014 0000000000000000000000000000000000000000000000000000000000000014 00000000000000000000000000000000000000000000000000000000000017d1 00000000000000000000000000000000000000000000000000000000000017d1 00000005
 //     SingleChain
 //         byte msgType
 //         5 bytes zeros (padding) //done so that complies with anchor format, doAnchorChecks can be reused on this
@@ -239,8 +240,8 @@ library StormLib {
     event MultichainRedeemed(uint indexed msgHash, bool redeemed, uint hashlock); //redeemed here is a variable that says whether the propoer preimage shown to unlcok funds. If false, means that timeout occurred and funds reverted back to their sources. if redeemed, hashlock is the proper preimage used.
 
     
-    enum ChannelFunctionTypes { ANCHOR, UPDATE, ADDFUNDSTOCHANNEL, SETTLE, SETTLESUBSET, STARTDISPUTE, WITHDRAW }
-    enum MsgType { INITIAL, UNCONDITIONAL, SHARDED, SETTLE, SETTLESUBSET, ADDFUNDSTOCHANNEL, SINGLECHAIN, MULTICHAIN }
+    enum ChannelFunctionTypes { ANCHOR, SETTLE, SETTLESUBSET, ADDFUNDSTOCHANNEL, STARTDISPUTE, WITHDRAW }
+    enum MsgType { INITIAL, UNCONDITIONAL, SHARDED, SETTLE, SETTLESUBSET, ADDFUNDSTOCHANNEL} //, SINGLECHAIN, MULTICHAIN } TODO: uncomment if using singleswap
     
     struct SwapStruct {
         uint hashlock;
@@ -279,7 +280,8 @@ library StormLib {
     uint constant DISPUTE_BLOCK_HOURS = 1;
     uint8 constant NUM_TOKEN = 68;
     uint8 constant START_ADDRS = 69;
-    uint8 constant TOKEN_PLUS_BALS_UNIT = 148; //for 20 byte addr + 64 bytes bals + 64 bytes fees
+    uint8 constant TOKEN_PLUS_BALANCESTRUCT_UNIT = 148; //for 20 byte addr + 64 bytes bals + 64 bytes fees
+    uint8 constant BALANCESTRUCT_UNIT = 128; //for 64 btes vals, 64 bytes fees
     uint8 constant PARTNERADDR_OFFSET = 4; //gives the offset that you subtract from start of message to get the partner addr in a calldataload
     address constant NATIVE_TOKEN = address(0);
     IERC20 constant KALADIMES_CONTRACT = IERC20(address(0)); //TODO: make this a real contract
@@ -334,7 +336,7 @@ library StormLib {
         require(channel.exists && channel.settlementInProgress, "b");
         require(block.number > channel.disputeBlockTimeout, "c");
 
-        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1; //pointing to the first shard
+        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens) + 1; //pointing to the first shard
         if (MsgType(uint8(message[0])) == MsgType.SHARDED) {
             numShards = uint8(message[shardPointer - 1]); //bc shardPointer pointing to first object after numShards
         }
@@ -389,8 +391,8 @@ library StormLib {
         for (uint i = 0; i < numTokens; i++) {
             assembly { 
                 tokenAddress := calldataload(add(sub(tokens.offset, 12), mul(i, 20))) //MAGICNUMBERNOTE: bc tokens starts at first tokenAddr, is 20 bytes, so we go back -12 so that -12+32 ends at 20
-                _ownerBalance := calldataload(add(tokens.offset, add(startBal, mul(i, 128))))
-                _partnerBalance := calldataload(add(tokens.offset, add(startBal, add(32, mul(i, 128)))))
+                _ownerBalance := calldataload(add(tokens.offset, add(startBal, mul(i, BALANCESTRUCT_UNIT))))
+                _partnerBalance := calldataload(add(tokens.offset, add(startBal, add(32, mul(i, BALANCESTRUCT_UNIT)))))
             }
             balances[i] = _ownerBalance + _partnerBalance;
             if (i == 0 && tokenAddress == NATIVE_TOKEN) {
@@ -568,7 +570,7 @@ library StormLib {
         uint channelID = uint(keccak256(abi.encodePacked(uint32(block.number), message[5: START_ADDRS + (numTokens * 20)]))); //calcs channelID, inserting the block number in front. 
         require(!channels[channelID].exists, "s");
 
-        uint160 balanceTotalsHash = lockTokens(message[START_ADDRS : START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)], numTokens, partnerAddr, tokenAmounts);
+        uint160 balanceTotalsHash = lockTokens(message[START_ADDRS : START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens)], numTokens, partnerAddr, tokenAmounts);
         Channel storage channel = channels[channelID];
         channel.exists = true;
         channel.balanceTotalsHash = balanceTotalsHash;
@@ -604,9 +606,9 @@ library StormLib {
     //     for (uint i = 0; i < numTokens; i++){
     //         assembly {
     //             let startBals := add(add(message.offset, START_ADDRS), mul(numTokens, 20))
-    //             _ownerBalance := calldataload(add(startBals, mul(i, 128)))
-    //             _partnerBalance := calldataload(add(add(startBals, 32), mul(i, 128)))
-    //             balanceTotal := calldataload(add(add(startBals, mul(numTokens, 128)), mul(i, 32)))
+    //             _ownerBalance := calldataload(add(startBals, mul(i, BALANCESTRUCT_UNIT)))
+    //             _partnerBalance := calldataload(add(add(startBals, 32), mul(i, BALANCESTRUCT_UNIT)))
+    //             balanceTotal := calldataload(add(add(startBals, mul(numTokens, BALANCESTRUCT_UNIT)), mul(i, 32)))
     //         }
     //         require(_ownerBalance + _partnerBalance == balanceTotal, "l");
     //     }
@@ -625,16 +627,16 @@ library StormLib {
         uint amountToAddPartner;
         uint prevBalanceTotal;
         address partnerAddr; //is calced here not in addFundsToChannel, bc msg sig was based off of pSignerAddr, whihc may not actually have possession of funds
-        assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: -3 bc ends at 28, 28 - 32 = -4
+        assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: -4 bc ends at 28, 28 - 32 = -4
 
         uint[] memory balanceTotalsNew = new uint[](numTokens);
         for (uint i = 0; i < numTokens; i++) {
             assembly { 
-                let startBalOwner := add(add(add(message.offset, START_ADDRS), mul(20, numTokens)), mul(i, 128)) //MAGICNUMBERNOTE: add 20 * numTokens to this to get start of balances
+                let startBalOwner := add(add(add(message.offset, START_ADDRS), mul(20, numTokens)), mul(i, BALANCESTRUCT_UNIT)) //MAGICNUMBERNOTE: add 20 * numTokens to this to get start of balances
                 tokenAddress := calldataload(add(add(message.offset, sub(START_ADDRS, 12)), mul(i, 20)))
                 amountToAddOwner := calldataload(startBalOwner)
                 amountToAddPartner := calldataload(add(startBalOwner, 32))
-                prevBalanceTotal := calldataload(add(add(add(message.offset, START_ADDRS), mul(numTokens, TOKEN_PLUS_BALS_UNIT)), mul(i, 32)))
+                prevBalanceTotal := calldataload(add(add(add(message.offset, START_ADDRS), mul(numTokens, TOKEN_PLUS_BALANCESTRUCT_UNIT)), mul(i, 32)))
             }
             //process any owner added funds
             if (amountToAddOwner != 0) {
@@ -666,9 +668,7 @@ library StormLib {
         address pSignerAddr;
         assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
         checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
-        //check that sender of msg is partner, so we know partner has a double sig they could go to chain with for the UncondiitonalMessage after the addFunds msg
-        assembly { pSignerAddr:= calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: -4 bc ends at 28, 28 - 32 = -4
-        require(msg.sender == pSignerAddr, "I");
+        
         channelID = uint(keccak256(message[1: START_ADDRS + (uint(uint8(message[NUM_TOKEN])) * 20)]));  
         Channel storage channel = channels[channelID];
         require(channel.exists, "u");
@@ -742,7 +742,7 @@ library StormLib {
              
         if (isSettle) {
             uint numTokens = uint(uint8(message[NUM_TOKEN]));
-            assembly { calldatacopy(add(balanceStruct, 32), add(add(add(message.offset, START_ADDRS), mul(numTokens, 20)), mul(i, 128)), 128) }
+            assembly { calldatacopy(add(balanceStruct, 32), add(add(add(message.offset, START_ADDRS), mul(numTokens, 20)), mul(i, BALANCESTRUCT_UNIT)), BALANCESTRUCT_UNIT) }
             require(balanceStruct.ownerBalance + balanceStruct.partnerBalance == balanceTotal, "l");
         }
         assembly { tokenAddress := calldataload(add(add(message.offset, sub(START_ADDRS, 12)), mul(i, 20))) }
@@ -777,8 +777,8 @@ library StormLib {
         uint[] memory balanceTotalsNew = new uint[]((isSettleSubset ? numTokens : 0)); //TO DO: make sure this costs no gas if in ! isSettleSubset case
         for (uint i = 0; i < numTokens; i++) {
             uint balanceTotal;
-            assembly { balanceTotal := calldataload(add(add(add(message.offset, START_ADDRS), mul(numTokens, TOKEN_PLUS_BALS_UNIT)), mul(i, 32))) } 
-            if (balanceTotal != 0 && (!isSettleSubset || (uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + i]) == 1))) {
+            assembly { balanceTotal := calldataload(add(add(add(message.offset, START_ADDRS), mul(numTokens, TOKEN_PLUS_BALANCESTRUCT_UNIT)), mul(i, 32))) } 
+            if (balanceTotal != 0 && (!isSettleSubset || (uint8(message[START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens) + i]) == 1))) {
                 //should settle this token. Either bc nonempty and settle, or nonempty and subsetSettle with flag set
                 BalanceStruct memory balanceStruct;
                 address tokenAddress = calcBalsAndFees(message, balanceStruct, balanceTotal, partnerAddr, i);
@@ -855,7 +855,7 @@ library StormLib {
      */
     function updateShards(Channel storage channel, bytes calldata message, MsgType msgType, uint numTokens) private {
         //check that startDispute is valid. TO DO: check all of these operations, esp assembly, for overflow
-        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens); //points to byte for numShards
+        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens); //points to byte for numShards
         uint8 numShards = (msgType == MsgType.SHARDED) ? uint8(message[shardPointer]) : 0; 
         shardPointer += 1; //point to first shards tokenIndex
         uint[] memory balanceTotalsWithShards = new uint[](numTokens);
@@ -874,7 +874,7 @@ library StormLib {
             uint balanceTotal;
             uint notInShards;
             assembly {
-                let startOwnerBal := add(message.offset, add(startBal, mul(128, i)))
+                let startOwnerBal := add(message.offset, add(startBal, mul(BALANCESTRUCT_UNIT, i)))
                 notInShards := add(calldataload(startOwnerBal), calldataload(add(startOwnerBal, 32)))
                 balanceTotal := calldataload(sub(message.length, mul(sub(numTokens, i), 32))) //jumps to ith total in balanceTotals
             }
@@ -902,12 +902,12 @@ library StormLib {
     function setShardDataMsg(Channel storage channel, bytes calldata message, uint numShards, uint numTokens) private {
         uint8[] memory shardDataMsg = new uint8[](numShards); //initialized all to 0, or false, at the start
         if (channel.settlementInProgress) {
-            uint shardPointerNew = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1; //points at first shards in new msg
+            uint shardPointerNew = START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens) + 1; //points at first shards in new msg
             uint shardPointerOld = shardPointerNew + (numShards * LEN_SHARD) + 4;
             uint numShardsOld = 0;
             //check if old msg wasnt sharded, and if not, we can ignore it. 
             if (MsgType(uint8(message[shardPointerOld])) == MsgType.SHARDED) { //if old msg not sharded, no sharded states to relay, can skip over below loop
-                shardPointerOld += START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1;
+                shardPointerOld += START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens) + 1;
                 uint currIndexNew = 0;
                 numShardsOld = uint(uint8(message[shardPointerOld - 1]));
                 for (uint i = 0; i < numShardsOld; i++) {
@@ -920,7 +920,7 @@ library StormLib {
                     if (currIndexNew == numShards) { break; }
                 }
             }
-            channel.msgHash = uint(keccak256(abi.encodePacked(message[0: START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1 + (numShards * LEN_SHARD)], shardDataMsg)));
+            channel.msgHash = uint(keccak256(abi.encodePacked(message[0: START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens) + 1 + (numShards * LEN_SHARD)], shardDataMsg)));
         } else {
             channel.msgHash = uint(keccak256(abi.encodePacked(message[0: message.length - (numTokens * 32) - 4], shardDataMsg)));
         }
@@ -932,7 +932,7 @@ library StormLib {
         msgType = MsgType(uint8(message[0]));
         require(msgType == MsgType.INITIAL || msgType == MsgType.UNCONDITIONAL || msgType == MsgType.SHARDED, "p");
         address partnerAddr;
-        uint endMsg0 = START_ADDRS + (numTokens * TOKEN_PLUS_BALS_UNIT); //gives the end of the first message, up to either the deadline or the nonce. If sharded, line below will skip over shards
+        uint endMsg0 = START_ADDRS + (numTokens * TOKEN_PLUS_BALANCESTRUCT_UNIT); //gives the end of the first message, up to either the deadline or the nonce. If sharded, line below will skip over shards
         if (msgType == MsgType.SHARDED) { endMsg0 += uint(uint8(message[endMsg0])) * LEN_SHARD; } 
         if (msgType != MsgType.INITIAL) {
             //if is initial, we dont touch nonce, and leave it initialized to 0. Remember, INITIALS end in a deadline, not a nonce, since nonce is implicitly 0
@@ -994,12 +994,12 @@ library StormLib {
     function changeShardStateHelper(bytes calldata message, uint8[] calldata shardNos, uint hashlockPreimage) private view returns (uint) {
         uint numTokens = uint(uint8(message[0]));
 
-        uint numShards = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens)]));
+        uint numShards = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens)]));
         uint8[] memory shardStatesNew = new uint8[](numShards);
         assembly { calldatacopy(add(shardStatesNew, 32),  add(message.offset, sub(message.length, add(32, numTokens))), numShards) } //store the current shardDataMsgs in shardStatesNew
         uint timeout;
         for (uint i = 0; i < shardNos.length; i++) {
-            uint shardPointer = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1 + (shardNos[i] * LEN_SHARD) + 6])); //point this to proper shards shardTimeout, jumpin over tokenBalances, numShards, prior shards, and then+2 so read ends at 6 + 32 = 38, the end of shardTimeout
+            uint shardPointer = uint(uint8(message[START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens) + 1 + (shardNos[i] * LEN_SHARD) + 6])); //point this to proper shards shardTimeout, jumpin over tokenBalances, numShards, prior shards, and then+2 so read ends at 6 + 32 = 38, the end of shardTimeout
             assembly { timeout := calldataload(add(message.offset, shardPointer)) }
             require(block.timestamp <= uint(uint32(timeout)), "e"); //uint(uint32( bc need to clear away garbage that came before shardTimeout, and only examine last 4 bytes
             address partnerAddr;
@@ -1039,7 +1039,7 @@ library StormLib {
 
     function addShardsInWithdraw(bytes calldata message, BalanceStruct[] memory shardTokenBals, uint numTokens, uint8 numShards) pure private {
         //we will go through and add all the shard information to shardTokenBals.
-        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALS_UNIT * numTokens) + 1; //points now to tokenIndex of first shard.
+        uint shardPointer = START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens) + 1; //points now to tokenIndex of first shard.
         for (uint8 i = 0; i < numShards; i++) {
             uint8 shardState = uint8(message[message.length - 32 - (numShards - i)]);
             uint amount;
@@ -1077,7 +1077,7 @@ library StormLib {
         
         uint startBals = START_ADDRS + (numTokens * 20);
         BalanceStruct[] memory shardTokenBals = new BalanceStruct[](numTokens); //this stores owner, partner split for each token.
-        assembly { calldatacopy(add(shardTokenBals, 32), add(message.offset, startBals), mul(numTokens, 128)) }  //lets initialize it with the non sharded information stored in message balances right after tokens
+        assembly { calldatacopy(add(shardTokenBals, 32), add(message.offset, startBals), mul(numTokens, BALANCESTRUCT_UNIT)) }  //lets initialize it with the non sharded information stored in message balances right after tokens
 
         if (numShards > 0) {
             addShardsInWithdraw(message, shardTokenBals, numTokens, numShards);
