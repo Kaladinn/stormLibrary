@@ -15,9 +15,9 @@
 */
 
 pragma solidity ^0.8.7;
-// import './githubFolder/ERC20.sol';
+// import './ERC20.sol';//TODO: fix this with proper string value from github, or from actual contract usage.
 import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
-// import "./StormLibrary.sol";//TO DO: fix this with proper string value from github, or from actual contract usage.
+// import "./StormLibrary.sol";//TODO: fix this with proper string value from github, or from actual contract usage.
 import "https://github.com/Kaladinn/stormLibrary/blob/main/StormLibrary.sol";
 
 
@@ -27,17 +27,16 @@ contract Storm {
     uint248 public lockCount; //num ongoing swaps
     uint8 reentrancyLock; //usually 0, but if enter function that makes external calls, then is set to 1(then back to 0 at end). All external non-view facing functions check that when entered, reentrancyLock == 0. 
     
-    mapping(uint => StormLib.Channel) channels; //TO DO: do we want this to be public?
-    mapping(uint => StormLib.SwapStruct) public seenSwaps;
+    mapping(uint => StormLib.Channel) public channels; //TODO: do we want this to be public?
+    // mapping(uint => StormLib.SwapStruct) public seenSwaps; #TODO: uncomment and use this if using singleSwaps
     
     constructor () payable {
         owner = msg.sender;
         tokenAmounts[address(0)].ownerBalance = msg.value;
-        //TO DO: should user be able to optionally call addFunds here? Could be really hard to coordinate with approve calls since dont know nonce beforehand. 
     }
 
 
-    /** TO DO: we could delete this, and it would save us up to 0.01 ETH. Can always do this using addFundsToContract
+    /** TODO: we could delete this, and it would save us up to 0.01 ETH. Can always do this using addFundsToContract
      * Fallback. Call if want to stake more ETH into the contract. 
      */
     receive() external payable {
@@ -102,8 +101,8 @@ contract Storm {
     //NOTE: The uint[] balanceTotals is tacked onto the end of message. We do this to avoid issues with call stack too deep errors.
     function channelGateway(bytes calldata message, bytes calldata signatures, StormLib.ChannelFunctionTypes channelFunction) external payable {
         require(reentrancyLock == 0, "a");
-        //lock and contract that calls out to IERC20, which are all but update and startdispute
-        if (channelFunction != StormLib.ChannelFunctionTypes.UPDATE && channelFunction != StormLib.ChannelFunctionTypes.STARTDISPUTE) { reentrancyLock = 1; }
+        //lock and contract that calls out to IERC20, which are all but startdispute
+        if (channelFunction != StormLib.ChannelFunctionTypes.STARTDISPUTE) { reentrancyLock = 1; }
         if (channelFunction == StormLib.ChannelFunctionTypes.ANCHOR) {
             uint channelID = StormLib.anchor(message, signatures, owner, channels, tokenAmounts);
             lockCount += 1;
@@ -127,8 +126,8 @@ contract Storm {
             emit StormLib.Settled(channelID, message);
         } else { revert('D'); }
 
-        //unlock and contract that calls out to IERC20, which are all but update and startdispute
-        if (channelFunction != StormLib.ChannelFunctionTypes.UPDATE && channelFunction != StormLib.ChannelFunctionTypes.STARTDISPUTE) { reentrancyLock = 0; }
+        //unlock and contract that calls out to IERC20, which are all but startdispute
+        if (channelFunction != StormLib.ChannelFunctionTypes.STARTDISPUTE) { reentrancyLock = 0; }
     }
 
 

@@ -742,7 +742,7 @@ library StormLib {
              
         if (isSettle) {
             uint numTokens = uint(uint8(message[NUM_TOKEN]));
-            assembly { calldatacopy(add(balanceStruct, 32), add(add(add(message.offset, START_ADDRS), mul(numTokens, 20)), mul(i, BALANCESTRUCT_UNIT)), BALANCESTRUCT_UNIT) }
+            assembly { calldatacopy(balanceStruct, add(add(add(message.offset, START_ADDRS), mul(numTokens, 20)), mul(i, BALANCESTRUCT_UNIT)), BALANCESTRUCT_UNIT) }
             require(balanceStruct.ownerBalance + balanceStruct.partnerBalance == balanceTotal, "l");
         }
         assembly { tokenAddress := calldataload(add(add(message.offset, sub(START_ADDRS, 12)), mul(i, 20))) }
@@ -754,8 +754,6 @@ library StormLib {
             (balanceStruct.partnerBalance, balanceStruct.ownerBalance, balanceStruct.partnerFee, balanceStruct.ownerFee) = feeLogic(balanceStruct.partnerBalance, balanceStruct.ownerBalance, balanceStruct.partnerFee, balanceStruct.ownerFee);
         }
         //now, ownerFee and partnerFee correspond to the amount they should pay Kaladin
-        uint conversionRate = 1; //TODO: call out to uniswap to get our actual conversion rate
-
         if (balanceStruct.partnerBalance != 0) {
             if (tokenAddress == NATIVE_TOKEN) {
                 payable(partnerAddr).transfer(balanceStruct.partnerBalance);
@@ -764,7 +762,8 @@ library StormLib {
             }
         }
         
-        KALADIMES_CONTRACT.transferFrom(address(this), partnerAddr, conversionRate * balanceStruct.partnerFee); 
+        uint conversionRate = 1; //TODO: call out to uniswap to get our actual conversion rate
+        // KALADIMES_CONTRACT.transferFrom(address(this), partnerAddr, conversionRate * balanceStruct.partnerFee); #TODO:uncomment this and fill with actual address, plus figure out how it will work for approves
         balanceStruct.ownerFee *= conversionRate;
         return (tokenAddress);
     }
@@ -777,7 +776,7 @@ library StormLib {
         uint[] memory balanceTotalsNew = new uint[]((isSettleSubset ? numTokens : 0)); //TO DO: make sure this costs no gas if in ! isSettleSubset case
         for (uint i = 0; i < numTokens; i++) {
             uint balanceTotal;
-            assembly { balanceTotal := calldataload(add(add(add(message.offset, START_ADDRS), mul(numTokens, TOKEN_PLUS_BALANCESTRUCT_UNIT)), mul(i, 32))) } 
+            assembly { balanceTotal := calldataload(add(message.offset, sub(message.length, mul(32, sub(numTokens, i))))) } //MAGICNUMBERNOTE: Go back (numTokens - i) * 32 bytes to get to the ith prevBalanceTotal 
             if (balanceTotal != 0 && (!isSettleSubset || (uint8(message[START_ADDRS + (TOKEN_PLUS_BALANCESTRUCT_UNIT * numTokens) + i]) == 1))) {
                 //should settle this token. Either bc nonempty and settle, or nonempty and subsetSettle with flag set
                 BalanceStruct memory balanceStruct;
@@ -876,7 +875,7 @@ library StormLib {
             assembly {
                 let startOwnerBal := add(message.offset, add(startBal, mul(BALANCESTRUCT_UNIT, i)))
                 notInShards := add(calldataload(startOwnerBal), calldataload(add(startOwnerBal, 32)))
-                balanceTotal := calldataload(sub(message.length, mul(sub(numTokens, i), 32))) //jumps to ith total in balanceTotals
+                balanceTotal := calldataload(add(message.offset, sub(message.length, mul(32, sub(numTokens, i))))) //jumps to ith total in balanceTotals
             }
             balanceTotalsWithShards[i] += notInShards;
             require(balanceTotalsWithShards[i] == balanceTotal, "l");
