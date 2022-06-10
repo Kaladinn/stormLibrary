@@ -632,11 +632,11 @@ library StormLib {
         uint[] memory balanceTotalsNew = new uint[](numTokens);
         for (uint i = 0; i < numTokens; i++) {
             assembly { 
-                let startBalOwner := add(add(add(message.offset, START_ADDRS), mul(20, numTokens)), mul(i, BALANCESTRUCT_UNIT)) //MAGICNUMBERNOTE: add 20 * numTokens to this to get start of balances
+                let startBalOwner := add(add(add(message.offset, START_ADDRS), mul(20, numTokens)), mul(i, 64)) //MAGICNUMBERNOTE: add 20 * numTokens to this to get start of balances, then jump over 32 +32 bytes for the new amts adding
                 tokenAddress := calldataload(add(add(message.offset, sub(START_ADDRS, 12)), mul(i, 20)))
                 amountToAddOwner := calldataload(startBalOwner)
                 amountToAddPartner := calldataload(add(startBalOwner, 32))
-                prevBalanceTotal := calldataload(add(add(add(message.offset, START_ADDRS), mul(numTokens, TOKEN_PLUS_BALANCESTRUCT_UNIT)), mul(i, 32)))
+                prevBalanceTotal := calldataload(add(message.offset, sub(message.length, mul(32, sub(numTokens, i))))) //MAGICNUMBERNOTE: Go back (numTokens - i) * 32 bytes to get to the ith prevBalanceTotal
             }
             //process any owner added funds
             if (amountToAddOwner != 0) {
