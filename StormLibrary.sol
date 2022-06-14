@@ -229,6 +229,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
     //for shardTimeout, final hour means less than 1 hour of blocks remaining. If exactly 1 hour remaining, does not count as a slashing case (the no TuringInComplete case)
     
 library StormLib {
+    event ContractFundsAdded(address[] addressesAdded);
     event Anchored(uint indexed channelID, bytes message, bytes partnerSig);
     event Settled(uint indexed channelID, bytes tokenBalances);
     event SettledSubset(uint indexed channelID, uint32 indexed nonce, bytes tokenBalances);

@@ -59,6 +59,9 @@ contract Storm {
             //if addingFunds, then we will allow anyone to hit; heck, if you wanna deposit free money into someones contract, by our guest.
             //if !addingFunds, then we require the msg.sender to be the owner; only the owner should dictate when they remove funds from contract
             StormLib.updateContractFunds(tokens, funds, tokenAmounts, msg.sender, addingFunds);
+            if (addingFunds) { 
+                emit ContractFundsAdded(tokens);
+            }
         } else {
             //means that !addingFunds, and not sent by owner. Thus, this will settle out fees to Kaladin
             StormLib.updateContractFunds(tokens, funds, tokenAmounts, address(0), addingFunds);
