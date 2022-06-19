@@ -15,10 +15,10 @@
 */
 
 pragma solidity ^0.8.7;
-// import './ERC20.sol';//TODO: fix this with proper string value from github, or from actual contract usage.
-import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
-// import "./StormLibrary.sol";//TODO: fix this with proper string value from github, or from actual contract usage.
-import "https://github.com/Kaladinn/stormLibrary/blob/main/StormLibrary.sol";
+import './ERC20.sol';//TODO: fix this with proper string value from github, or from actual contract usage.
+// import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
+import "./StormLibrary.sol";//TODO: fix this with proper string value from github, or from actual contract usage.
+// import "https://github.com/Kaladinn/stormLibrary/blob/main/StormLibrary.sol";
 
 
 contract Storm {
@@ -60,7 +60,7 @@ contract Storm {
             //if !addingFunds, then we require the msg.sender to be the owner; only the owner should dictate when they remove funds from contract
             StormLib.updateContractFunds(tokens, funds, tokenAmounts, msg.sender, addingFunds);
             if (addingFunds) { 
-                emit ContractFundsAdded(tokens);
+                emit StormLib.ContractFundsAdded(tokens);
             }
         } else {
             //means that !addingFunds, and not sent by owner. Thus, this will settle out fees to Kaladin

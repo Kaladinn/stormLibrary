@@ -39,7 +39,7 @@ pragma solidity ^0.8.0;
         //The fee, given by fees / FEE_DENOM, are always truncated to the nearest integer.
         //If the fees are greater than the totals in the channel, then the amount for the channel is completely drained, even though this is less than the fees owed.
             // It is up to nodes to make sure this doesnt happen before signing messages.
-        //If a shard reverts, the fees field isn't updated. However, if it succeeds: and ownerGiving, owner fees incremented; else, partner fees incremented.
+        //If a shard reverts, the fees field isn't updated. However, if it succeeds: and ownerRecv, owner fees incremented; else, partner fees incremented.
     //Tricky Bits:
         //When figuring out how to pay Kaladimes, how do we know the conversion rate between a random IERC20 and a Kaladime? A: call out to Uniswap contract to get the conversion rate?
             //Are Kaladimes pegged to a value? Free floating? WOuld this value be a stablecoin or a fluctuating currency like ETHER?
@@ -86,7 +86,9 @@ pragma solidity ^0.8.0;
 
 //TODO: add selfdestruct() functionality? More complicated now, bc cant self destruct until sure that both Kaladin and owner have fully redeemed 
 
-import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
+//TODO: uncomment and change these around for mainnet launch
+// import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contracts/token/ERC20/ERC20.sol";
+import './ERC20.sol';
 
 
 // channelID:
@@ -126,7 +128,7 @@ import "https://github.com/OpenZeppelin/openzeppelin-contracts/blob/master/contr
 //shardData: (static 70)
     //uint8 tokenIndex.  
         //Index of the token being traded on. 
-    //uint8 ownerGivingOrReceiving: 0: ownerReceiving. 1: ownerGiving
+    //uint8 ownerRecv: 0: ownerGiving. 1: ownerReceiving
         //says whether owner is giving token to partner, or whether owner receiving it from partner
     //uint amount 
         // amount being traded on
@@ -844,7 +846,7 @@ library StormLib {
         shardPointer += 1; //point to first shards tokenIndex
         uint[] memory balanceTotalsWithShards = new uint[](numTokens);
         for (uint8 i = 0; i < numShards; i++) { 
-            //looping over ownerGivingOrReceivingFirst in shard in shardData
+            //looping over ownerRecv in shard in shardData
             uint amount;
             assembly { amount := calldataload(add(message.offset, add(shardPointer, 2))) } //point this to the start of amount, which is 2 after tokenIndex
             balanceTotalsWithShards[uint8(message[shardPointer])] += amount;
@@ -989,7 +991,7 @@ library StormLib {
             address partnerAddr;
             assembly { partnerAddr := calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: so that reads up to -4 + 32 = 28, which is where partnerAddr ends in message
             
-            //If shard has not been pushed forward; if hashlock given is correct, push forward. But, if less than 1 hour remaining, then slash.
+            //If shard has not been pushed forward; if hashlock given is correct, push forward.
             uint hashlock;
             assembly { hashlock := calldataload(add(message.offset, add(shardPointer, 1))) } //MAGICNUMBERNOTE: 1 is just to jump over shardBlockTimeout
             require(hashlock == uint(keccak256(abi.encodePacked(hashlockPreimage))), "A");
@@ -1027,16 +1029,16 @@ library StormLib {
         for (uint8 i = 0; i < numShards; i++) {
             uint8 shardState = uint8(message[message.length - 32 - (numShards - i)]);
             uint amount;
-            bool ownerGiving = uint8(message[shardPointer + 1]) == 1; //jumps shardPointer over tokenIndex
+            bool ownerRecv = uint8(message[shardPointer + 1]) == 1; //jumps shardPointer over tokenIndex
             assembly { amount := calldataload(add(message.offset, add(shardPointer, 2))) } //MAGICNUMBERNOTE: jumps over tokenIndex, ownerGoR
-            if ((ownerGiving && shardState == 0) || (!ownerGiving && shardState == 1)) {
-                //owner was giving and the funds reverted, so owner gets them back, or owner was receiving and it was pushed through, so owner actually gets them.
+            if ((ownerRecv && shardState == 1) || (!ownerRecv && shardState == 0)) {
+                //owner was receiving and the funds pushed through, so owner gets them, or owner was giving and it was revert, so owner actually gets them back.
                 shardTokenBals[i].ownerBalance += amount;
                 if (shardState == 1) {
                     shardTokenBals[i].partnerFee += amount; //partnerFee since they were the sender. Only add fees for swaps that suceeed
                 }
             } else {
-                //owner was giving and funds pushed through, so partner gets them, or partner was receiving and reverted, so partner gets them back
+                //owner was receiving and failed, so partner gets them back, or partner was givng and pushed, so partner gets funds
                 shardTokenBals[i].partnerBalance += amount;
                 if (shardState == 1) {
                     shardTokenBals[i].ownerFee += amount; //ownerFee since they were the sender. Only add fees for swaps that suceeed
