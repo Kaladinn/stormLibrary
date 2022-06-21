@@ -100,7 +100,7 @@ import './ERC20.sol';
 //     address partnerAddr
 //         the address of the person providing funds. This is where funds are received from, and sent to. This sig is only checked in anchor and singleswapStake
 //     address contractAddress
-//     address pSignerAddr
+//     address partnerSignerAddr
 //         the address that the partner person uses to sign messages. This may be the same as partnerAddr.
 //     byte numTokens
 //         represents number of 20 byte ERC20 addrs below that are in contract. Note this is limited to 255 by nature of being a byte. 
@@ -363,7 +363,7 @@ library StormLib {
      * checks that given a message and two pairs of signatures, the signatures are valid for the keccak of the message,
      * given that ownerSignature matches owner of the contract, and partnerSignature matches partnerAaddress that is embedded in message as part of pairID.
      * Signatures are ECDSA sigs in the form v || r || s. Also, signatures in form ownerSignature | partnerSignature.
-     * Is anchor states whether we should use partnerAddr(anchoring), or pSignerAddr(everything else)
+     * Is anchor states whether we should use partnerAddr(anchoring), or partnerSignerAddr(everything else)
      */
     function checkSignatures(bytes32 messageHash, bytes calldata signatures, address owner, address nonOwnerAddr) private pure {
         bytes32 r;
@@ -418,7 +418,7 @@ library StormLib {
         assembly { assemblyVariable := calldataload(sub(message.offset, 24)) } //MAGICNUMBERNOTE: chainID  at 5-7,  so -24 + 32 = 8, will have last byte as pos. 7, as desired!
         require(uint(uint24(assemblyVariable)) == block.chainid, "q"); //have to cast it to a uint24 bc thats how it is in message, to strip out all invalid data before it, then recast it to compare it to the chainid, which is a uint. 
 
-        assembly { assemblyVariable := calldataload(add(message.offset, sub(NUM_TOKEN, 52))) } //MAGICNUMBERNOTE: bc contractAddress ends at NUM_TOKEN - pSignerAddr, or NUM_TOKEN - 20
+        assembly { assemblyVariable := calldataload(add(message.offset, sub(NUM_TOKEN, 52))) } //MAGICNUMBERNOTE: bc contractAddress ends at NUM_TOKEN - partnerSignerAddr, or NUM_TOKEN - 20
         require(address(uint160(assemblyVariable)) == address(this), "r");
 
         assembly{ assemblyVariable := calldataload(add(message.offset, sub(message.length, 32))) } //MAGICNUMBERNOTE: -32 from end bc deadline uint, at very end msg
@@ -460,7 +460,7 @@ library StormLib {
         uint amountToAddOwner;
         uint amountToAddPartner;
         uint prevBalanceTotal;
-        address partnerAddr; //is calced here not in addFundsToChannel, bc msg sig was based off of pSignerAddr, whihc may not actually have possession of funds
+        address partnerAddr; //is calced here not in addFundsToChannel, bc msg sig was based off of partnerSignerAddr, whihc may not actually have possession of funds
         assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: -4 bc ends at 28, 28 - 32 = -4
 
         uint[] memory balanceTotalsNew = new uint[](numTokens);
@@ -499,9 +499,9 @@ library StormLib {
     function addFundsToChannel(bytes calldata message, bytes calldata signatures, address owner, mapping(uint => Channel) storage channels, mapping(address => FeeStruct) storage tokenAmounts) external returns (uint channelID, uint32 nonce) {
         require (MsgType(uint8(message[0])) == MsgType.ADDFUNDSTOCHANNEL, "p");
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
-        address pSignerAddr;
-        assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
-        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        address partnerSignerAddr;
+        assembly { partnerSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: partnerSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
+        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, partnerSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
         
         channelID = uint(keccak256(message[1: START_ADDRS + (uint(uint8(message[NUM_TOKEN])) * 20)]));  
         Channel storage channel = channels[channelID];
@@ -629,9 +629,9 @@ library StormLib {
 
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        address pSignerAddr;
-        assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
-        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        address partnerSignerAddr;
+        assembly { partnerSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: partnerSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
+        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, partnerSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
      
         require(channels[channelID].exists, "u");
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
@@ -648,15 +648,15 @@ library StormLib {
 
         uint numTokens = uint(uint8(message[NUM_TOKEN]));
         channelID = uint(keccak256(message[1: START_ADDRS + (numTokens * 20)]));
-        address pSignerAddr;
-        assembly { pSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
-        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, pSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
+        address partnerSignerAddr;
+        assembly { partnerSignerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32))) } //MAGICNUMBERNOTE: partnerSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes        
+        checkSignatures(keccak256(message[0: message.length - (32 * numTokens)]), signatures, owner, partnerSignerAddr); //MAGICNUMBERNOTE: dont take whole msg bc the last 32*numTokens bytes are the balanceTotals string, not part of signature.
         require(channels[channelID].exists, "u"); 
         require(channels[channelID].balanceTotalsHash == uint160(bytes20(keccak256(message[message.length - (32 * numTokens): message.length]))), "E"); //MAGICNUMBER NOTE: take last numTokens values, since these are the uint[] balanceTotals
         
         //check that sender of msg is partner, so we know partner has a double sig they could go to chain with for the UncondiitonalSubsetMessage after the SettleSubset msg is published
-        assembly { pSignerAddr:= calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: -4 bc ends at 28, 28 - 32 = -4
-        require(msg.sender == pSignerAddr, "I");
+        assembly { partnerSignerAddr:= calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: -4 bc ends at 28, 28 - 32 = -4
+        require(msg.sender == partnerSignerAddr, "I");
     
         require(!channels[channelID].settlementInProgress, "w"); //Cant distribute if settling; don't know which direction to shove the shards.
         
@@ -755,13 +755,13 @@ library StormLib {
             //if is initial, we dont touch nonce, and leave it initialized to 0. Remember, ANCHORS end in a deadline, not a nonce, since nonce is implicitly 0
             assembly { 
                 nonce := calldataload(add(message.offset, sub(endMsg0, 28))) //-32 from end msg, + 4 bc not actually at end but is really at start nonce, so 4 - 32 = -28
-                partnerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32)))  //MAGICNUMBERNOTE: pSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes            }
+                partnerAddr := calldataload(add(message.offset, sub(NUM_TOKEN, 32)))  //MAGICNUMBERNOTE: partnerSignerAddr finishes at start of NUM_TOKEN, so we backtrack 32 bytes            }
             }
             checkSignatures(keccak256(message[0: endMsg0 + 4]), signatures, owner, partnerAddr); //MAGICNUMBERNOTE: add 4 for nonce
             assembly { partnerAddr := calldataload(sub(message.offset, 4)) } //MAGICNUMBERNOTE: getting partnerAddr set correctly for check below, where we require msg.sender == partnerAddr
  
         } else {
-            //is initial, so we want to check sig off of the partnerAddr, not pSignerAddr
+            //is initial, so we want to check sig off of the partnerAddr, not partnerSignerAddr
             assembly { partnerAddr := calldataload(sub(message.offset, 4)) }//MAGICNUMBERNOTE: bc end of partnerAddr sits at 28, 28 - 32 = -4
             checkSignatures(keccak256(abi.encodePacked(message[0: 1], bytes4(0), message[5: endMsg0 + 32])), signatures, owner, partnerAddr); //MAGICNUMBERNOTE: have to add 32 bc goes right up to deadline. DO this funky abi.encodePacked bc signature for anchor msg does not include blockAtAnchor, but rather 4 bytes of zeros, so we must excise blocktAtAnchor, and add these in. 
         }
