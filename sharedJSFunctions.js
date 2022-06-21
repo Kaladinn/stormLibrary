@@ -69,13 +69,13 @@ function signFinalMsgs(channels, channelData, DBIndex) {
                 sessionIDs.push(channel['sessionID'])
                 if (!channelDatum['tokensInSubset']) {
                     //just a plain settle, not subset
-                    channel['newMsg'] = StormMessageTypes['SETTLE'] + (channel['msg'].slice(0, 2) == StormMessageTypes['INITIAL'] ? channel['msg'].slice(2,-64) : channel['msg'].slice(2,-8)) //keep same balances, channelID, but change msgType unconditional -> settle, and strip out deadline/nonce
+                    channel['newMsg'] = StormMessageTypes['SETTLE'] + (channel['msg'].slice(0, 2) == StormMessageTypes['ANCHOR'] ? channel['msg'].slice(2,-64) : channel['msg'].slice(2,-8)) //keep same balances, channelID, but change msgType unconditional -> settle, and strip out deadline/nonce
                     channel['newSig'] = signMessage(channel['newMsg'], mySigningAddr, DBIndex)
                     channelDatum['sig'] = channel['newSig']
                 } else { 
                     //subset, so need to sign a settleSubsetMsg, and an unconditionalSubsetMsg
                     var endOfChannelID = balancesIndex + (len(channel['tokenBalanceMap']) * 40)
-                    channel['settleSubsetMsg'] = StormMessageTypes['SETTLESUBSET'] + (channel['msg'].slice(0, 2) == StormMessageTypes['INITIAL'] ? channel['msg'].slice(2,-64) : channel['msg'].slice(2,-8)) //keep same balances, channelID, but change msgType unconditional -> settle, and strip out deadline/nonce
+                    channel['settleSubsetMsg'] = StormMessageTypes['SETTLESUBSET'] + (channel['msg'].slice(0, 2) == StormMessageTypes['ANCHOR'] ? channel['msg'].slice(2,-64) : channel['msg'].slice(2,-8)) //keep same balances, channelID, but change msgType unconditional -> settle, and strip out deadline/nonce
                     channel['unconditionalSubsetMsg'] = StormMessageTypes['UNCONDITIONALSUBSET'] + channel['msg'].slice(2, endOfChannelID) //msgType + channelID
                     
                     //append string of bools for whether should settle on settleSubsetMsg, zero out balance or keep original for unconditionalSubsetMsg
